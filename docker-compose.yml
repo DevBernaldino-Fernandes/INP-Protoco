@@ -1,0 +1,42 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: inp
+      POSTGRES_PASSWORD: inp123
+      POSTGRES_DB: inp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  inp-server:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: inp
+      DB_PASSWORD: inp123
+      DB_NAME: inp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mock-payment:
+    build: .
+    command: npm run mock-service
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
