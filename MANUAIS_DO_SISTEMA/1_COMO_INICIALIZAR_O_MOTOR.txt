@@ -1,0 +1,107 @@
+================================================================================
+MANUAL 1: COMO INICIALIZAR O MOTOR DO INP PROTOCOL
+Documentação Oficial de Operação e Inicialização do Sistema
+================================================================================
+
+Este guia ensina o passo a passo exato para inicializar o motor do INP Protocol
+(Gateway Central) e a rede de microsserviços associada, garantindo que o sistema
+esteja 100% operacional para receber pedidos de clientes e agentes de IA.
+
+--------------------------------------------------------------------------------
+1. PRÉ-REQUISITOS DO SISTEMA
+--------------------------------------------------------------------------------
+Antes de iniciar, certifique-se de que o seu computador possui:
+
+1. Node.js (versão 18 ou superior instalada)
+   - Verifique no terminal digitando: node -v
+2. Banco de Dados PostgreSQL ativo
+   - Host padrão: 127.0.0.1 (porta 5432)
+   - Usuário configurado: inp
+   - Senha configurada: inp123
+   - Nome do banco: inp
+
+--------------------------------------------------------------------------------
+2. MÉTODO 1: INICIALIZAÇÃO EM 1 CLIQUE (WINDOWS - MAIS FÁCIL)
+--------------------------------------------------------------------------------
+Criamos um inicializador automático para você não precisar digitar nenhum comando:
+
+1. Abra a pasta do projeto no Windows:
+   C:\inp_protocol
+2. Dê um duplo-clique no arquivo:
+   INICIAR_PROJETO.bat
+3. O que o script fará automaticamente:
+   - Abre uma janela preta iniciando o Gateway INP (Porta 3000).
+   - Abre uma segunda janela preta iniciando os 4 microsserviços (Portas 3001 a 3004).
+   - Abre automaticamente o navegador na interface de controle:
+     http://localhost:3000/demo
+
+Tudo fica pronto e conectado em menos de 10 segundos!
+
+--------------------------------------------------------------------------------
+3. MÉTODO 2: INICIALIZAÇÃO MANUAL PASSO A PASSO (TERMINAL / LINUX / MAC)
+--------------------------------------------------------------------------------
+Se você prefere controlar cada processo manualmente no terminal:
+
+PASSO 3.1: INICIAR O MOTOR CENTRAL (GATEWAY INP)
+1. Abra um terminal (PowerShell, Bash ou Prompt de Comando).
+2. Entre na pasta do projeto:
+   cd C:\inp_protocol
+3. Compile o código TypeScript (necessário apenas se houve alteração):
+   npm run build
+4. Inicie o motor do Gateway:
+   node dist/index.js
+
+COMO CONFIRMAR QUE O MOTOR INICIOU:
+Você verá as seguintes mensagens no terminal:
+   ✅ Database connected
+   [Queue Worker] Active and polling with ID: worker_...
+   🚀 INP Server running on port 3000
+
+* ATENÇÃO: Deixe este terminal aberto. Ele é o coração do sistema.
+
+---
+
+PASSO 3.2: INICIAR OS MICROSSERVIÇOS DA REDE
+1. Abra um SEGUNDO terminal (mantenha o primeiro rodando).
+2. Entre na pasta do projeto:
+   cd C:\inp_protocol
+3. Execute o comando de inicialização dos microsserviços:
+   npx ts-node examples/ecommerce-ecosystem/start-ecosystem.ts
+
+COMO CONFIRMAR QUE OS MICROSSERVIÇOS INICIARAM:
+Você verá no segundo terminal:
+   📦 Inventory Service running at http://localhost:3001
+   💳 Payment Service running at http://localhost:3002
+   🚚 Shipping Service running at http://localhost:3003
+   🔔 Notification Service running at http://localhost:3004
+   [Inventory Service] Auto-registration succeeded
+   [Payment Service] Auto-registration succeeded
+   [Shipping Service] Auto-registration succeeded
+   [Notification Service] Auto-registration succeeded
+   ✅ Todos os 4 microsserviços foram inicializados e registrados com sucesso!
+
+---
+
+PASSO 3.3: TESTAR AS CONEXÕES NO NAVEGADOR
+Abra o navegador e acesse as rotas de saúde:
+- Motor Gateway: http://localhost:3000/health  -> Retorna: {"status":"ok"}
+- Estoque:       http://localhost:3001/health  -> Retorna: {"status":"ok"}
+- Pagamentos:    http://localhost:3002/health  -> Retorna: {"status":"ok"}
+- Logística:     http://localhost:3003/health  -> Retorna: {"status":"ok"}
+- Notificação:   http://localhost:3004/health  -> Retorna: {"status":"ok"}
+
+--------------------------------------------------------------------------------
+4. RESOLUÇÃO DE PROBLEMAS COMUNS (TROUBLESHOOTING)
+--------------------------------------------------------------------------------
+1. Problema: "EADDRINUSE: address already in use :::3000"
+   - Significa que um processo anterior do Node continuou rodando.
+   - Solução: Feche as outras janelas de terminal ou execute: npx kill-port 3000
+
+2. Problema: "Database connection failed"
+   - Significa que o serviço do PostgreSQL não está rodando.
+   - Solução: Abra o "Serviços" do Windows (services.msc) e inicie o serviço
+     "postgresql-x64-..." ou execute no terminal: net start postgresql-x64-16
+
+3. Como desligar tudo com segurança:
+   - Pressione Ctrl + C em cada uma das janelas de terminal abertas.
+================================================================================

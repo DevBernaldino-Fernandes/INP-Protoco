@@ -1,0 +1,157 @@
+================================================================================
+MANUAL 2: COMO FAZER PEDIDOS NO INP PROTOCOL
+Guia de Comunicação via Linguagem Natural e DSL Estruturada
+================================================================================
+
+O INP Protocol possui um ponto de entrada único para qualquer pedido:
+   URL:     POST http://localhost:3000/api/intent
+   Headers: Content-Type: application/json
+
+O cliente pode submeter intenções de duas formas:
+1. Em DSL (Domain Specific Language): Para integrações rigorosas de sistemas.
+2. Em Linguagem Natural (Português Humano): Para agentes de IA e usuários.
+
+--------------------------------------------------------------------------------
+FORMA 1: FAZENDO UM PEDIDO EM DSL (ESTRUTURADO)
+--------------------------------------------------------------------------------
+A DSL do INP é dividida em 4 blocos essenciais:
+- CONTEXT: Os dados brutos da operação (usuário, valores, itens, endereço).
+- REQUIRE: As capacidades obrigatórias que a rede de serviços precisa fornecer.
+- FLOW: A ordem lógica de execução (ex: SEQUENCE para um passo após o outro).
+- OUTPUT: O formato de resposta desejado (ex: json).
+
+EXEMPLO COMPLETO DE COMPRA E-COMMERCE (Happy Path):
+```text
+INTENT "checkout_order" {
+  CONTEXT {
+    user_id: "usr_buyer_42",
+    email: "cliente@globalshop.com",
+    productId: "LAPTOP_PRO",
+    quantity: 1,
+    amount: 1999.00,
+    currency: "USD",
+    card_token: "tok_visa_infinite_99",
+    shipping_address: "Avenida da Liberdade 100, Lisboa"
+  }
+  REQUIRE {
+    CHECK STOCK
+    RESERVE STOCK
+    EXECUTE PAYMENT
+    CREATE SHIPMENT
+    SEND CONFIRMATION
+  }
+  FLOW {
+    SEQUENCE {
+      CHECK STOCK
+      RESERVE STOCK
+      EXECUTE PAYMENT
+      CREATE SHIPMENT
+      SEND CONFIRMATION
+    }
+  }
+  OUTPUT { FORMAT "json" }
+}
+```
+
+COMO ENVIAR ESTE PEDIDO VIA CÓDIGO (JavaScript / Node.js):
+```javascript
+const payload = {
+  type: "dsl",
+  text: dslStringAcima,
+  securityContext: {
+    userId: "usr_buyer_42",
+    permissions: ["payments.write"] // Permissão de segurança exigida
+  }
+};
+
+const response = await fetch("http://localhost:3000/api/intent", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(payload)
+});
+
+const data = await response.json();
+console.log(data);
+```
+
+RESPOSTA RECEBIDA:
+{
+  "success": true,
+  "result": {
+    "name": "checkout_order",
+    "status": "COMPLETED",
+    "output": {
+      "transactionId": "txn_1788631469107_4608",
+      "authCode": "AUTH_718598",
+      "trackingCode": "TRK-469124-5683",
+      "carrier": "FastLogistics Express",
+      "notificationStatus": "SENT"
+    }
+  }
+}
+
+--------------------------------------------------------------------------------
+FORMA 2: FAZENDO UM PEDIDO EM LINGUAGEM NATURAL (PORTUGUÊS)
+--------------------------------------------------------------------------------
+O motor possui o módulo 'IntentParser', que recebe frases em português humano,
+extrai as entidades (valores, usuários, tokens) e compila automaticamente na DSL.
+
+EXEMPLO DE ENVIO:
+```javascript
+const response = await fetch("http://localhost:3000/api/intent", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    type: "natural",
+    text: "Quero pagar 1999 dólares para o usuário usr_buyer_42 com o cartão tok_visa_infinite_99",
+    securityContext: {
+      userId: "usr_buyer_42",
+      permissions: ["payments.write"]
+    }
+  })
+});
+
+const data = await response.json();
+console.log(data);
+```
+
+O QUE O INP FAZ AO RECEBER A FRASE:
+1. Detecta o verbo de ação: "pagar" -> Mapeia para EXECUTE PAYMENT.
+2. Extrai o valor numérico: "1999" -> amount = 1999.00.
+3. Extrai a moeda: "dólares" -> currency = "USD".
+4. Extrai o identificador: "usr_buyer_42" -> user_id = "usr_buyer_42".
+5. Extrai o token do cartão: "tok_visa_infinite_99" -> card_token = "...".
+6. Executa a cobrança no microsserviço de pagamentos de forma segura.
+
+--------------------------------------------------------------------------------
+EXEMPLOS RÁPIDOS EM OUTRAS LINGUAGENS
+--------------------------------------------------------------------------------
+
+EXEMPLO EM PYTHON:
+```python
+import requests
+
+url = "http://localhost:3000/api/intent"
+payload = {
+    "type": "natural",
+    "text": "Quero pagar 1999 dólares para o usuário usr_buyer_42 com o cartão tok_visa_infinite_99",
+    "securityContext": {
+        "userId": "usr_buyer_42",
+        "permissions": ["payments.write"]
+    }
+}
+response = requests.post(url, json=payload)
+print(response.json())
+```
+
+EXEMPLO EM CURL (TERMINAL):
+```bash
+curl -X POST http://localhost:3000/api/intent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "natural",
+    "text": "Quero pagar 1999 dólares para o usuário usr_buyer_42 com o cartão tok_visa_infinite_99",
+    "securityContext": { "userId": "usr_buyer_42", "permissions": ["payments.write"] }
+  }'
+```
+================================================================================

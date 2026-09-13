@@ -36,20 +36,29 @@ C:\inp_protocol
 │   │   └── server.ts                 # Servidor Express HTTP (API REST)
 │   ├── core/
 │   │   ├── capability-registry.ts    # Descoberta de serviços e matching
-│   │   ├── execution-engine.ts       # Engine de execução de grafos/passos
+│   │   ├── crypto-engine.ts          # Criptografia AES-256-GCM com rotação de chaves
+│   │   ├── execution-engine.ts       # Engine de execução de grafos/passos com Saga e resiliência
 │   │   ├── inp-core.ts               # Orquestrador central unificado
 │   │   ├── intent-parser.ts          # Interpretador de DSL / Hook de LLM
 │   │   ├── matching-engine.ts        # Resolução de dependências de capacidades
+│   │   ├── queue-worker.ts           # Worker da fila transacional (SKIP LOCKED)
 │   │   ├── registry-cache.ts         # Cache em memória (Performance)
 │   │   ├── response-composer.ts      # Formatador de respostas multi-formato
+│   │   ├── safe-evaluator.ts         # Avaliador de condições lógico seguro (AST)
+│   │   ├── saga-recovery-manager.ts  # Auto-recuperação/compensação de Sagas na inicialização
+│   │   ├── transaction-lock.ts       # Gerenciador de travas PostgreSQL (FOR UPDATE NOWAIT)
 │   │   └── types.ts                  # Definições de tipos TypeScript do sistema
 │   ├── persistence/
 │   │   ├── data-source.ts            # Configuração do TypeORM e PostgreSQL
 │   │   ├── entities/
 │   │   │   ├── Execution.ts          # Registro de auditoria de execução
+│   │   │   ├── QueueJob.ts           # Registro de Jobs da Fila Outbox
+│   │   │   ├── SagaState.ts          # Estado e pilha de compensação da transação Saga
 │   │   │   └── ServiceRegistration.ts# Cadastro de microsserviços no banco
 │   │   └── repositories/
 │   │       ├── ExecutionRepository.ts# Abstração de banco para execuções
+│   │       ├── QueueJobRepository.ts # Abstração de banco para Jobs Outbox
+│   │       ├── SagaStateRepository.ts# Abstração de banco para Sagas com locks
 │   │       └── ServiceRepository.ts  # Abstração de banco para serviços
 │   ├── services/
 │   │   └── mock-payment-service.ts   # Microsserviço simulador de pagamentos
@@ -82,14 +91,28 @@ C:\inp_protocol
 
 ### D. [ExecutionEngine](file:///C:/inp_protocol/src/core/execution-engine.ts)
 *   **Função**: Executa recursivamente o fluxo de passos do grafo (`SEQUENCE`, `PARALLEL`, `CONDITION`, `RETRY`, `FALLBACK`, `TIMEOUT`, `DEPENDENCY`, `PIPELINE`, `SCOPE`).
-*   **Resiliência**:
+*   **Resiliência & Transacionalidade**:
+    *   **Padrão Saga**: Rastreia dinamicamente os passos reversíveis executados e armazena suas ações de compensação na tabela `saga_states`. Se ocorrer um erro irrecuperável, executa o rollback compensatório de forma ordenada (LIFO).
+    *   **Recuperação Progressiva (Forward Recovery)**: Se a política `FORWARD_RETRY` for ativada no contexto da intenção, o motor salva o progresso e reinicia a execução no exato passo que falhou, pulando e reaproveitando o resultado dos passos anteriores já concluídos com sucesso.
     *   **Retry com Backoff Exponencial**: Implementado via `axios-retry` para tentar novamente requisições em caso de falhas de conectividade temporárias.
     *   **Circuit Breaker**: Implementado via `circuit-breaker-js`. Isola microsserviços instáveis na rede, abrindo o circuito se a taxa de erros ultrapassar 50% em uma janela de tempo.
-*   **Segurança (RBAC)**: Valida as permissões do usuário em trânsito contra o atributo `requiredPermissions` da capacidade requerida.
+*   **Segurança (RBAC)**: Valida as permissões do usuário em trânsito contra o atributo `requiredPermissions` da capacidade requerida. Permite bypass de RBAC se estiver em modo de rollback do sistema (`isRollbackMode`).
 *   **Validação de Contrato**: Utiliza a biblioteca `ajv` para compilar e validar o payload em relação ao JSON Schema do microsserviço cadastrado antes de efetuar chamadas externas.
 
 ### E. [ResponseComposer](file:///C:/inp_protocol/src/core/response-composer.ts)
 *   **Função**: Transforma o resultado final em diferentes formatos suportados pelas aplicações clientes (`json`, `xml`, `text`, `event` para SSE/Websockets).
+
+### F. [SafeEvaluator](file:///C:/inp_protocol/src/core/safe-evaluator.ts)
+*   **Função**: Executa validações lógicas e matemáticas customizadas a partir de condições configuradas nos blocos `CONDITION`.
+*   **Design de Sintaxe**: Desenvolvido usando um Parser de Descida Recursiva completo construído sobre AST sem o uso de `eval()` ou `new Function()`, blindando a aplicação contra ataques de injeção de código e execução remota de código (RCE).
+
+### G. [CryptoEngine](file:///C:/inp_protocol/src/core/crypto-engine.ts)
+*   **Função**: Fornece criptografia simétrica AES-256-GCM criptograficamente segura para dados sensíveis em passos `ENCRYPT` / `DECRYPT`.
+*   **Rotação de Chaves**: Implementa rotação automática baseada em versões (ex: prefixos `v1:` e `v2:`), permitindo descriptografar registros antigos enquanto criptografa novos payloads com a chave ativa mais atual.
+
+### H. [QueueWorker & TransactionLock](file:///C:/inp_protocol/src/core/queue-worker.ts)
+*   **Função**: Processador transacional assíncrono do padrão Outbox (`QueueWorker`) e utilitário de travas do banco (`TransactionLock`).
+*   **Locks Concorrentes**: Utiliza travas pessimistas `SKIP LOCKED` do PostgreSQL no worker para evitar contenção de filas concorrentes, e travas `FOR UPDATE NOWAIT` no rollback de Sagas para garantir exclusão mútua na recuperação distribuída.
 
 ---
 
@@ -168,9 +191,9 @@ INTENT "[Nome da Intenção]" {
 ### 3. Listar Serviços Ativos
 *   **Endpoint**: `GET /services`
 
-### 4. Processar uma Intenção (DSL ou Natural)
+### 4. Processar uma Intenção (Síncrona ou Assíncrona via Outbox)
 *   **Endpoint**: `POST /api/intent`
-*   **Body**:
+*   **Body (Síncrono)**:
 ```json
 {
   "text": "INTENT \"buy_item\" { CONTEXT { amount: 150.0, user_id: \"usr_77\", card_token: \"tok_456\" } REQUIRE { EXECUTE PAYMENT } FLOW { SEQUENCE { EXECUTE PAYMENT } } OUTPUT { FORMAT \"json\" } }",
@@ -178,6 +201,29 @@ INTENT "[Nome da Intenção]" {
   "securityContext": {
     "userId": "usr_77",
     "permissions": ["payments.write"]
+  }
+}
+```
+*   **Body (Assíncrono via Outbox Fila)**:
+```json
+{
+  "text": "INTENT \"buy_item\" { CONTEXT { amount: 150.0, user_id: \"usr_77\", card_token: \"tok_456\" } REQUIRE { EXECUTE PAYMENT } FLOW { SEQUENCE { EXECUTE PAYMENT } } OUTPUT { FORMAT \"json\" } }",
+  "type": "dsl",
+  "async": true,
+  "securityContext": {
+    "userId": "usr_77",
+    "permissions": ["payments.write"]
+  }
+}
+```
+*   **Retorno Assíncrono**:
+```json
+{
+  "success": true,
+  "result": {
+    "status": "PENDING",
+    "execution_id": "d3b07384-d113-4a1e-a13d-519b7d8b5c90",
+    "message": "Intent enqueued for asynchronous execution"
   }
 }
 ```
@@ -214,15 +260,55 @@ INTENT "[Nome da Intenção]" {
     ```bash
     npm install
     ```
-2.  Inicie o servidor principal (porta `3000`):
+2.  Compile o projeto (TypeScript):
     ```bash
-    npm run dev
+    npm run build
     ```
-3.  Inicie o serviço mock de pagamentos de teste (porta `3001` em outro terminal):
+3.  Inicie o servidor principal (porta `3000`):
+    ```bash
+    npm start
+    ```
+4.  Inicie o serviço mock de pagamentos de teste (porta `3001` em outro terminal):
     ```bash
     npm run mock-service
     ```
-4.  Execute a suíte de testes de validação automatizados:
+5.  Execute a suíte de testes de validação base:
     ```bash
     node test-features.js
     ```
+6.  Execute a suíte de testes avançados e arquitetura distribuída (Saga, DLQ, Lock Reap, Idempotency):
+    ```bash
+    node test-saga.js
+    ```
+
+---
+
+## 7. Melhorias de Nível Master (Arquitetura Avançada)
+
+O sistema conta com três extensões de governança operacional e resiliência de nível sênior/master:
+
+### A. Lock Reap Timeout (Auto-recuperação de Jobs)
+*   **Mecanismo**: Periodicamente, o `QueueWorker` executa uma varredura para identificar e liberar locks de jobs travados no estado `PROCESSING` por tempo excessivo (limite de expiração configurável).
+*   **Impacto**: Garante auto-recuperação caso uma instância de gateway sofra uma queda repentina durante o processamento.
+
+### B. Dead Letter Queue (DLQ) & Alertas de Webhooks
+*   **Mecanismo**: Transações Saga ou compensações (rollbacks) que falham definitivamente após o limite de tentativas são roteadas para uma tabela `dead_letter_queue` dedicada para auditoria manual.
+*   **Alertas**: O sistema dispara uma chamada HTTP POST de webhook externa (configurada via `ALERT_WEBHOOK_URL`) com detalhes da falha operacional para alertas em tempo real. Os registros em DLQ e disparos de webhook ocorrem de forma isolada de transações que sofreram rollback.
+
+### C. Chaves de Idempotência Determinísticas (Idempotency Keys)
+*   **Mecanismo**: O motor gera automaticamente um cabeçalho `X-Idempotency-Key` único para chamadas HTTP externas. O valor da chave é um UUID gerado deterministicamente a partir do `executionId` e do índice do passo atual da fluxo (`stepIndex`), garantindo que execuções duplicadas e retentativas não resultem em efeitos colaterais.
+
+---
+
+## 8. Documentação Completa e Especializada
+
+Para aprofundar-se em cada aspecto do **Intent Network Protocol (INP)**, consulte os manuais especializados na pasta [`docs/`](file:///c:/inp_protocol/docs/):
+
+1. 🏛️ [**01-ARCHITECTURE.md**](file:///c:/inp_protocol/docs/01-ARCHITECTURE.md): Diagramas C4, fluxo de orquestração detalhado, padrões distribuídos e ciclo de vida de intenções.
+2. 📜 [**02-DSL-SPECIFICATION.md**](file:///c:/inp_protocol/docs/02-DSL-SPECIFICATION.md): Especificação formal da DSL, operadores de fluxo, escopos confidenciais e exemplos para cada palavra-chave.
+3. 🌐 [**03-API-REFERENCE.md**](file:///c:/inp_protocol/docs/03-API-REFERENCE.md): Guia de todos os endpoints REST, formato de Server-Sent Events (SSE), headers de rastreamento e exemplos cURL.
+4. 🛡️ [**04-SECURITY-AUDIT-AND-HARDENING.md**](file:///c:/inp_protocol/docs/04-SECURITY-AUDIT-AND-HARDENING.md): Análise de ameaças STRIDE, vulnerabilidades identificadas e guia prático de blindagem.
+5. 🔌 [**05-MICROSERVICES-AND-FEDERATION-GUIDE.md**](file:///c:/inp_protocol/docs/05-MICROSERVICES-AND-FEDERATION-GUIDE.md): Passo a passo para desenvolvedores criarem microsserviços integrados e nós federados P2P.
+6. 🚀 [**06-OPERATIONS-AND-DEPLOYMENT.md**](file:///c:/inp_protocol/docs/06-OPERATIONS-AND-DEPLOYMENT.md): Guia DevOps de Docker, Docker Compose, variáveis de ambiente, DLQ e runbook de troubleshooting.
+7. 🔍 [**07-AUDIT-REPORT.md**](file:///c:/inp_protocol/docs/07-AUDIT-REPORT.md): Relatório executivo da auditoria técnica com pontos fortes, fracos, matriz de risco e roadmap de evolução.
+

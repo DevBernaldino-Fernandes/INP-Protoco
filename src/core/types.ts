@@ -1,10 +1,24 @@
 /**
- * Core type definitions for the INP protocol.
+ * @fileoverview Definições de Tipos e Contratos Nucleares do Protocolo INP
+ * @module Core/Types
+ * @description
+ * Define todas as interfaces, uniões de tipos, estruturas de dados e modelos contratuais
+ * que regem o funcionamento do Intent Network Protocol (INP). Abrange a representação
+ * de intenções declarativas, passos de fluxo de orquestração, registo de serviços,
+ * resultados de execução, telemetria de segurança e contexto transacional.
+ *
+ * @security Estabelece contratos estritos de segurança, níveis de confiança (trustScore)
+ * e permissões requeridas (RBAC) para prevenir acessos não autorizados entre microserviços.
+ * @audit Todos os identificadores de execução, carimbos temporais e estados de transação
+ * aqui tipificados são essenciais para a rastreabilidade e integridade em auditorias forenses.
  */
 
 import { v4 as uuidv4 } from 'uuid';
 
-// Intent verbs (actions)
+/**
+ * @description Verbos canónicos de intenção reconhecidos pelo motor semântico.
+ * Representam as ações semânticas fundamentais executáveis pelos microserviços registados.
+ */
 export type IntentVerb =
   | 'CREATE' | 'READ' | 'UPDATE' | 'DELETE'
   | 'EXECUTE' | 'PROCESS' | 'ANALYZE' | 'GENERATE'
@@ -13,136 +27,258 @@ export type IntentVerb =
   | 'FETCH' | 'STORE' | 'CALCULATE'
   | 'REFUND' | 'CANCEL' | 'APPROVE' | 'REJECT';
 
-// Flow control keywords
+/**
+ * @description Palavras-chave de controlo de fluxo no grafo de orquestração.
+ * Suporta execuções sequenciais, concorrentes, condicionais, com repetição e compensação.
+ */
 export type FlowControl =
   | 'SEQUENCE' | 'PARALLEL' | 'CONDITION' | 'RETRY'
   | 'FALLBACK' | 'TIMEOUT' | 'DEPENDENCY' | 'PIPELINE' | 'SCOPE';
 
-// Security keywords
+/**
+ * @description Palavras-chave de segurança para políticas declarativas e encriptação no protocolo.
+ */
 export type SecurityKeyword = 
   | 'SECURE' | 'ENCRYPT' | 'DECRYPT' | 'VERIFY'
   | 'TRUST' | 'PERMISSION' | 'POLICY';
 
-// Context is a free-form JSON object
+/**
+ * @description Contexto de execução da intenção, contendo variáveis de entrada e parâmetros dinâmicos.
+ */
 export interface IntentContext {
+  /** Parâmetros flexíveis chave-valor fornecidos na declaração da intenção */
   [key: string]: any;
 }
 
-// Required capabilities for the intent
+/**
+ * @description Requisitos e capacidades obrigatórias para que a intenção possa ser satisfeita.
+ */
 export interface IntentRequirement {
-  capabilities: string[];   // e.g., "EXECUTE PAYMENT"
+  /** Lista de capacidades exigidas (ex.: "EXECUTE PAYMENT", "FETCH INVENTORY") */
+  capabilities: string[];
 }
 
-// One step in the flow (can be nested)
+/**
+ * @description Estrutura de um passo individual ou composto dentro do grafo de orquestração do fluxo.
+ */
 export interface IntentFlowStep {
+  /** Tipo de controlo de fluxo a aplicar neste passo */
   type: FlowControl;
+  /** Identificador ou nome semântico do passo */
   name?: string;
-  action?: string;          // for simple steps: "FETCH INVENTORY"
-  condition?: string;       // JavaScript expression for CONDITION
+  /** Ação semântica atómica a executar (ex.: "FETCH INVENTORY") */
+  action?: string;
+  /** Expressão booleana avaliada em passos do tipo CONDITION */
+  condition?: string;
+  /** Número máximo de tentativas em caso de falha transitória */
   retryCount?: number;
+  /** Ação ou passo alternativo a executar em caso de falha persistente */
   fallback?: string;
+  /** Limite de tempo em milissegundos para a conclusão do passo */
   timeoutMs?: number;
+  /** Identificadores de passos dos quais este depende para iniciar */
   dependsOn?: string[];
-  steps?: IntentFlowStep[]; // nested steps
+  /** Sub-passos aninhados para blocos compostos (ex.: SEQUENCE, PARALLEL) */
+  steps?: IntentFlowStep[];
 }
 
-// Output format specification
+/**
+ * @description Especificação do formato de saída pretendido para o resultado da intenção.
+ */
 export interface IntentOutput {
+  /** Formato de serialização da resposta final */
   format: 'json' | 'xml' | 'text' | 'event';
+  /** Esquema de validação opcional (JSON Schema) para a resposta */
   schema?: any;
 }
 
-// Fully parsed intent
+/**
+ * @description Objeto canónico representativo de uma intenção após análise sintática e semântica.
+ * @audit O identificador UUID permite correlacionar pedidos externos com os registos de auditoria.
+ */
 export interface ParsedIntent {
-  id: string;               // UUID
+  /** Identificador único global (UUID v4) da intenção */
+  id: string;
+  /** Nome identificador da intenção */
   name: string;
+  /** Verbo semântico principal associado */
   verb?: IntentVerb;
+  /** Variáveis e dados contextuais da intenção */
   context: IntentContext;
+  /** Requisitos funcionais necessários para a execução */
   requirements: IntentRequirement;
+  /** Árvore/grafo de execução do fluxo */
   flow: IntentFlowStep[];
+  /** Especificação de formatação da saída */
   output: IntentOutput;
+  /** Texto original submetido em linguagem natural ou sintaxe formal */
   rawText?: string;
 }
 
-// A capability that a service exposes
+/**
+ * @description Especificação de uma capacidade técnica exposta por um microserviço.
+ */
 export interface Capability {
+  /** Verbo da ação semântica */
   verb: IntentVerb;
+  /** Objeto alvo ou domínio sobre o qual a ação atua */
   target: string;
+  /** Descrição funcional detalhada da capacidade */
   description?: string;
+  /** Lista de permissões RBAC exigidas para invocar esta capacidade */
   requiredPermissions?: string[];
+  /** Esquema JSON para validação rigorosa dos dados de entrada */
   inputSchema?: any;
+  /** Esquema JSON da estrutura devolvida pela capacidade */
   outputSchema?: any;
+  /** Capacidade inversa para compensação transacional em padrões Saga */
+  compensateCapability?: string;
 }
 
-// Service constraints (optional)
+/**
+ * @description Restrições operacionais e limites de infraestrutura associados a um serviço.
+ * @security Previne ataques de negação de serviço (DoS) e saturação de recursos.
+ */
 export interface ServiceConstraint {
+  /** Número máximo de invocações concorrentes permitidas */
   maxConcurrent?: number;
+  /** Tamanho máximo permitido para o corpo do pedido em Megabytes */
   maxPayloadSizeMB?: number;
+  /** Limite de tempo em milissegundos para respostas do serviço */
   timeoutMs?: number;
+  /** Permissões de segurança gerais exigidas pelo serviço */
   requiredPermissions?: string[];
 }
 
-// Service definition (local or remote)
+/**
+ * @description Registo descritivo de um microserviço registado no ecossistema INP.
+ * @security O índice de confiança (trustScore) e o nível de segurança regulam a elegibilidade de invocação.
+ */
 export interface Service {
+  /** Identificador único do serviço no registo */
   id: string;
+  /** Nome comercial ou funcional do serviço */
   name: string;
+  /** Descrição detalhada da finalidade do microserviço */
   description?: string;
+  /** Catálogo de capacidades funcionais suportadas */
   capabilities: Capability[];
+  /** Esquema global de entrada (se aplicável) */
   inputSchema?: any;
+  /** Esquema global de saída (se aplicável) */
   outputSchema?: any;
+  /** Restrições de invocação e limites de taxa */
   constraints?: ServiceConstraint;
-  trustScore: number;       // 0-100
+  /** Pontuação de reputação e fiabilidade calculada (0 a 100) */
+  trustScore: number;
+  /** Classificação de segurança para controlo de acesso */
   securityLevel: 'LOW' | 'MEDIUM' | 'HIGH';
-  endpoint?: string;        // HTTP base URL for remote calls
-  handler?: (input: any, context?: any) => Promise<any>; // local fallback
+  /** URL base HTTP do ponto de extremidade para invocações remotas */
+  endpoint?: string;
+  /** Manipulador local em memória utilizado para testes ou fallbacks diretos */
+  handler?: (input: any, context?: any) => Promise<any>;
 }
 
-// Result of matching a requirement to a service
+/**
+ * @description Resultado da correspondência algorítmica entre uma exigência de fluxo e um serviço.
+ */
 export interface ServiceMatch {
+  /** Instância do serviço selecionado pelo motor */
   service: Service;
+  /** Capacidade específica correspondente ao requisito */
   capability: Capability;
+  /** Pontuação ponderada de adequação e fiabilidade */
   score: number;
 }
 
-// Execution status
+/**
+ * @description Estados do ciclo de vida de uma execução transacional.
+ * @audit Essencial para determinar o estado de finalização e responsabilidade de auditoria.
+ */
 export type ExecutionStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'RETRYING' | 'CANCELLED';
 
-// Detailed result of a single step
+/**
+ * @description Registo detalhado do resultado de um passo atómico de execução.
+ */
 export interface ExecutionStepResult {
+  /** Identificador do passo */
   stepId: string;
+  /** Ação semântica invocada */
   action: string;
+  /** Estado de desfecho do passo */
   status: ExecutionStatus;
+  /** Dados enviados como entrada na invocação */
   input?: any;
+  /** Resposta devolvida pelo serviço */
   output?: any;
+  /** Mensagem ou pilha de erro em caso de insucesso */
   error?: string;
+  /** Tempo total decorrido em milissegundos */
   durationMs: number;
+  /** Data e hora exatas da execução */
   timestamp: Date;
 }
 
-// Complete execution result
+/**
+ * @description Registo global consolidado de uma execução completa de intenção.
+ * @audit Este registo é persistido em base de dados e consultado para fins de conformidade e auditoria forense.
+ */
 export interface ExecutionResult {
+  /** Identificador único global (UUID v4) da execução */
   id: string;
+  /** Identificador da intenção que despoletou a execução */
   intentId: string;
+  /** Estado final consolidado do fluxo */
   status: ExecutionStatus;
+  /** Histórico sequencial de resultados por passo */
   steps: ExecutionStepResult[];
+  /** Dados finais agregados e formatados */
   finalOutput?: any;
+  /** Detalhe da causa de falha geral se aplicável */
   error?: string;
+  /** Carimbo temporal de início */
   startedAt: Date;
+  /** Carimbo temporal de conclusão ou cancelamento */
   completedAt?: Date;
 }
 
-// Security context (user, roles, permissions)
+/**
+ * @description Contexto de segurança contendo a identidade do ator e privilégios de acesso.
+ * @security Suporta autenticação baseada em tokens, papéis (RBAC) e correlação de auditoria.
+ */
 export interface SecurityContext {
+  /** Identificador do utilizador ou serviço originador */
   userId?: string;
+  /** Endereço eletrónico do utilizador autenticado */
+  email?: string;
+  /** Papel principal do ator no sistema (ADMIN, CLIENT_ENTERPRISE, CLIENT_INDIVIDUAL, AUDITOR, DBA, etc.) */
+  role?: string;
+  /** Nível hierárquico específico de DBA (1: Monitorização, 2: Operacional, 3: Manutenção/Sénior) */
+  dbaLevel?: 1 | 2 | 3;
+  /** Empresa ou organização à qual o utilizador pertence */
+  company?: string;
+  /** Tipo de credencial utilizada na autenticação ('JWT' | 'API_KEY' | 'SYSTEM') */
+  authType?: 'JWT' | 'API_KEY' | 'SYSTEM';
+  /** Lista de papéis associados ao ator no sistema */
   roles?: string[];
+  /** Permissões granulares concedidas */
   permissions?: string[];
+  /** Nível de confiança mínimo atribuído à sessão */
   trustLevel?: number;
+  /** Identificador de correlação transacional para rastreio entre serviços distribuídos */
+  correlationId?: string;
 }
 
-// Configuration for the INP core
+/**
+ * @description Configuração global de inicialização do núcleo do protocolo INP.
+ */
 export interface INPConfig {
+  /** Ativa ou desativa as validações de segurança e permissões */
   enableSecurity: boolean;
+  /** Tempo limite padrão em milissegundos para invocações */
   defaultTimeoutMs: number;
+  /** Número máximo de repetições automáticas em caso de falha */
   maxRetries: number;
+  /** Limiar mínimo de pontuação de confiança (trustScore) exigido para seleção de serviços */
   trustThreshold: number;
 }

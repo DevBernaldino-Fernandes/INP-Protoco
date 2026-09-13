@@ -1,0 +1,5687 @@
+/**
+ * @fileoverview Lógica e Controladores de Interface do Portal Web Administrativo (portal.js)
+ * @module Api/PortalUI
+ * @description
+ * Script de cliente (executado no navegador) que alimenta o portal administrativo e dashboard oficial
+ * do protocolo INP. Controla a navegação entre separadores (tabs), os editores interativos de DSL,
+ * o envio assíncrono de intenções para a API REST, a visualização em tempo real do fluxo de telemetria
+ * via Server-Sent Events (SSE), a comutação de injeção de falhas (Chaos Engineering) e a renderização
+ * de métricas de saúde dos microserviços registados.
+ *
+ * @security Não manipula nem expõe segredos no lado do cliente. Trata as respostas recebidas
+ * de forma sanitizada para prevenir injeções de script no navegador (XSS).
+ * @audit Permite a operadores e auditores visualizar graficamente os fluxos, passos executados,
+ * latências e estados de transação em tempo real.
+ */
+
+/**
+ * @description Altera o separador ativo da interface web com verificação rigorosa de autorização (RBAC).
+ * Redireciona para o login e exibe notificação caso o utilizador tente aceder a consolas restritas sem perfil correspondente.
+ *
+ * @param {Event | null} event - Evento disparado pelo clique do utilizador ou nulo.
+ * @param {string} tabId - Identificador do elemento de conteúdo do separador a apresentar.
+ * @security Bloqueia a navegação em separadores administrativos e de auditoria para utilizadores sem permissões.
+ * @audit Previne a renderização indevida de dados forenses e de infraestrutura.
+ */
+function switchTab(event, tabId) {
+  const role = currentAuthUser ? currentAuthUser.role : null;
+
+  // Verificação rigorosa de autorização para abas privadas (RBAC)
+  if (tabId === 'tab-governance' && role !== 'ADMIN') {
+    if (typeof showToast === 'function') showToast('Acesso Restrito: O painel de Governança requer perfil de Administrador.', 'warning');
+    if (typeof openAuthModal === 'function') openAuthModal('login');
+    return;
+  }
+  if (tabId === 'tab-audit' && !(role === 'ADMIN' || role === 'AUDITOR' || role === 'SECOPS')) {
+    if (typeof showToast === 'function') showToast('Acesso Restrito: A Consola de Auditoria Forense requer credenciais de Auditor ou Administrador.', 'warning');
+    if (typeof openAuthModal === 'function') openAuthModal('login');
+    return;
+  }
+  if (tabId === 'tab-dba' && !(role === 'ADMIN' || role === 'DBA')) {
+    if (typeof showToast === 'function') showToast('Acesso Restrito: A Consola de DBA requer credenciais de Administrador de Base de Dados.', 'warning');
+    if (typeof openAuthModal === 'function') openAuthModal('login');
+    return;
+  }
+  if (tabId === 'tab-client' && !(role === 'ADMIN' || role === 'CLIENT_ENTERPRISE' || role === 'CLIENT_INDIVIDUAL' || role === 'DEVELOPER')) {
+    if (typeof showToast === 'function') showToast('Acesso Restrito: Inicie sessão para aceder à sua Área de Cliente.', 'warning');
+    if (typeof openAuthModal === 'function') openAuthModal('login');
+    return;
+  }
+
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  
+  const contentEl = document.getElementById(tabId);
+  if (contentEl) {
+    contentEl.classList.add('active');
+  }
+  
+  // Realçar todos os botões correspondentes à aba ativa (Desktop e Mobile)
+  document.querySelectorAll(`.tab-btn[data-tab="${tabId}"]`).forEach(btn => btn.classList.add('active'));
+
+  // Atualizar realce visual dos seletores de agrupamento (Dropdowns)
+  const ecosystemTabs = ['tab-dictionary', 'tab-tutorial', 'tab-microservices'];
+  const privateTabs = ['tab-governance', 'tab-audit', 'tab-dba', 'tab-client'];
+  const ecoBtn = document.getElementById('btn-dropdown-ecosystem');
+  const privBtn = document.getElementById('btn-dropdown-private');
+  if (ecoBtn) ecoBtn.classList.toggle('active', ecosystemTabs.includes(tabId));
+  if (privBtn) privBtn.classList.toggle('active', privateTabs.includes(tabId));
+
+  // Fechar gaveta de navegação mobile e dropdowns abertos
+  const mobileDrawer = document.getElementById('nav-mobile-drawer');
+  const mobileToggle = document.getElementById('btn-mobile-toggle');
+  if (mobileDrawer && mobileDrawer.classList.contains('open')) {
+    mobileDrawer.classList.remove('open');
+    if (mobileToggle) mobileToggle.classList.remove('open');
+  }
+  document.querySelectorAll('.nav-dropdown').forEach(dd => dd.classList.remove('open'));
+
+  // Despoleta carregamento modular das consolas especializadas de perfil
+  if (tabId === 'tab-governance') {
+    if (typeof loadUsersList === 'function') loadUsersList();
+    if (typeof loadAdminServiceControls === 'function') loadAdminServiceControls();
+  }
+  if (tabId === 'tab-audit') {
+    if (typeof loadAuditData === 'function') loadAuditData();
+    if (typeof loadDatabaseLogs === 'function') loadDatabaseLogs();
+  }
+  if (tabId === 'tab-dba' && typeof loadDbaDashboard === 'function') loadDbaDashboard();
+  if (tabId === 'tab-client') {
+    if (typeof loadClientDashboard === 'function') loadClientDashboard();
+    if (typeof loadClientExecutions === 'function') loadClientExecutions();
+  }
+
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// Playgrounds presets repository
+const presets = {
+  'dsl-tutorial': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "meu_primeiro_fluxo" {
+  CONTEXT {
+    amount: 150,
+    user_id: "usr_zk_99",
+    card_token: "tok_secure123"
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      EXECUTE PAYMENT
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`
+  },
+  'dsl-purchase': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "buy_product" {
+  CONTEXT {
+    amount: 250.75,
+    user_id: "usr_22",
+    card_token: "tok_secure123"
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      EXECUTE PAYMENT
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`
+  },
+  'dsl-advanced': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "secure_scoped_flow" {
+  CONTEXT {
+    amount: 300,
+    user_id: "usr_88",
+    card_token: "tok_secure123",
+    secret_key: "myPassword123"
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      ENCRYPT "secret_key"
+      SCOPE {
+        EXECUTE PAYMENT
+      }
+      DECRYPT "secret_key"
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`
+  },
+  'dsl-resilience': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "resilient_payment_flow" {
+  CONTEXT {
+    amount: 100,
+    user_id: "usr_55",
+    card_token: "tok_fast123"
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      TIMEOUT 2000 {
+        RETRY 3 {
+          EXECUTE PAYMENT
+        }
+      }
+    }
+  }
+  FALLBACK "LOG_ERROR"
+  OUTPUT {
+    FORMAT "json"
+  }
+}`
+  },
+  'dsl-zk-intents': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "secure_scoped_flow" {
+  CONTEXT {
+    amount: 150,
+    user_id: "usr_zk_99",
+    card_token: "tok_secure123",
+    commitment: "74895084a3aaf8f8a047c1d39ced874075948d72733b02c7c126c243b6b5102f",
+    proof: "150.confidentialSalt"
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      CONFIDENTIAL_SCOPE {
+        VERIFY amount >= 100
+        EXECUTE PAYMENT
+      }
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`
+  },
+  'natural-purchase': {
+    type: 'natural',
+    lang: 'Linguagem Humana',
+    text: 'Quero comprar o produto P10 com o valor de 450 euros e notificar user@example.com'
+  }
+};
+
+function updateLineNumbers() {
+  const codeEl = document.getElementById('playground-code');
+  const gutterEl = document.getElementById('editor-line-numbers');
+  if (!codeEl || !gutterEl) return;
+  
+  const lines = codeEl.value.split('\n');
+  const linesCount = lines.length;
+  let html = '';
+  for (let i = 1; i <= linesCount; i++) {
+    html += `<span>${i}</span>`;
+  }
+  gutterEl.innerHTML = html;
+  gutterEl.scrollTop = codeEl.scrollTop;
+}
+
+function loadPlaygroundPreset() {
+  const select = document.getElementById('playground-presets');
+  const data = select ? presets[select.value] : null;
+  if (data) {
+    const typeEl = document.getElementById('playground-type');
+    const codeEl = document.getElementById('playground-code');
+    const langEl = document.getElementById('editor-lang-indicator');
+    if (typeEl) typeEl.value = data.type;
+    if (codeEl) codeEl.value = data.text;
+    if (langEl) langEl.innerText = data.lang;
+    updateLineNumbers();
+    updateFlowPreview();
+  }
+}
+
+function runEditorLinter(code) {
+  const panel = document.getElementById('editor-lint-panel');
+  if (!panel) return;
+
+  if (!code || !code.trim()) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  // Helper to show success
+  function showSuccess() {
+    panel.style.display = 'block';
+    panel.style.background = 'rgba(16, 185, 129, 0.05)';
+    panel.style.border = '1px solid rgba(16, 185, 129, 0.2)';
+    panel.style.color = '#10b981';
+    panel.innerHTML = '✔ <strong>Sintaxe DSL Válida!</strong> O formato do fluxo e os blocos estão corretos.';
+
+    const btnRun = document.getElementById('btn-run-intent');
+    if (btnRun) {
+      btnRun.removeAttribute('disabled');
+      btnRun.style.opacity = '1';
+      btnRun.style.cursor = 'pointer';
+    }
+  }
+
+  // Helper to show error
+  function showError(lineNum, message, fixTip) {
+    panel.style.display = 'block';
+    panel.style.background = 'rgba(255, 42, 95, 0.04)';
+    panel.style.border = '1px solid rgba(255, 42, 95, 0.25)';
+    panel.style.color = 'var(--error)';
+    panel.innerHTML = `
+      <div style="font-weight: 700; margin-bottom: 4px;">❌ Erro de Sintaxe (IntelliSense)</div>
+      <div>${lineNum ? `<strong>Linha ${lineNum}:</strong> ` : ''}${message}</div>
+      ${fixTip ? `<div style="color: var(--text-muted); font-size: 11.5px; margin-top: 4px;">💡 <em>Dica: ${fixTip}</em></div>` : ''}
+    `;
+
+    const btnRun = document.getElementById('btn-run-intent');
+    if (btnRun) {
+      btnRun.setAttribute('disabled', 'true');
+      btnRun.style.opacity = '0.4';
+      btnRun.style.cursor = 'not-allowed';
+    }
+  }
+
+  // 1. Balanced Braces Validation
+  let openBraces = 0;
+  let closeBraces = 0;
+  const lines = code.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    openBraces += (line.match(/\{/g) || []).length;
+    closeBraces += (line.match(/\}/g) || []).length;
+  }
+
+  if (openBraces !== closeBraces) {
+    if (openBraces > closeBraces) {
+      showError(null, `Chaves desbalanceadas: Há ${openBraces} chaves abertas '{' e apenas ${closeBraces} fechadas '}'.`, `Adicione ${openBraces - closeBraces} chave(s) fechada(s) '}' no final do arquivo para fechar os blocos.`);
+    } else {
+      showError(null, `Chaves desbalanceadas: Há ${closeBraces} chaves fechadas '}' e apenas ${openBraces} abertas '{'.`, `Remova as chaves fechadas '}' sobressalentes ou adicione as chaves abertas correspondentes.`);
+    }
+    return;
+  }
+
+  // 2. Strict Line-by-Line Regex Validation
+  const patterns = [
+    /^INTENT\s+"[a-zA-Z0-9_\-]+"(\s*\{)?$/,
+    /^CONTEXT(\s*\{)?$/,
+    /^REQUIRE(\s*\{)?$/,
+    /^FLOW(\s*\{)?$/,
+    /^OUTPUT(\s*\{)?$/,
+    /^SEQUENCE(\s*\{)?$/,
+    /^PARALLEL(\s*\{)?$/,
+    /^PIPELINE(\s*\{)?$/,
+    /^TIMEOUT\s+[0-9]+(\s*\{)?$/,
+    /^RETRY\s+[0-9]+(\s*\{)?$/,
+    /^CONDITION\s+"[^"]+"(\s*\{)?$/,
+    /^DEPENDENCY\s+"[^"]+"(\s*\{)?$/,
+    /^(CONFIDENTIAL_SCOPE|SCOPE)(\s*\{)?$/,
+    /^(EXECUTE|VERIFY)\s+[A-Z0-9_]+(\s+[A-Z0-9_]+)*$/,
+    /^(ENCRYPT|DECRYPT)\s+"[a-zA-Z0-9_\-]+"$/,
+    /^VERIFY\s+[a-zA-Z0-9_\-"]+\s*(>=|<=|>|<|==)\s*[0-9.]+$/,
+    /^FALLBACK\s+"[a-zA-Z0-9_\-]+"$/,
+    /^FORMAT\s+"[a-zA-Z0-9_\-]+"$/,
+    /^\}$/
+  ];
+
+  const reservedWordsLower = [
+    'intent', 'context', 'flow', 'sequence', 'parallel', 'pipeline',
+    'require', 'execute', 'encrypt', 'decrypt', 'output', 'fallback',
+    'scope', 'confidential_scope', 'verify', 'timeout', 'retry',
+    'condition', 'dependency', 'format'
+  ];
+
+  let inContext = false;
+  let contextNesting = 0;
+  const mandatoryBlocks = {
+    'INTENT': false,
+    'CONTEXT': false,
+    'REQUIRE': false,
+    'FLOW': false,
+    'OUTPUT': false
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const lineNum = i + 1;
+
+    // Strip comments
+    const commentIdx = rawLine.indexOf('//');
+    let cleanLine = rawLine;
+    if (commentIdx !== -1) {
+      cleanLine = rawLine.substring(0, commentIdx);
+    }
+    cleanLine = cleanLine.trim();
+
+    if (!cleanLine) continue;
+
+    // A. Detect block boundaries and nesting
+    if (cleanLine.includes('CONTEXT {')) {
+      inContext = true;
+      contextNesting = 1;
+    }
+
+    let netBraces = 0;
+    if (inContext && !cleanLine.includes('CONTEXT {')) {
+      let openCount = 0;
+      let closeCount = 0;
+      let inDoubleQuote = false;
+      let inSingleQuote = false;
+      let escape = false;
+      for (let charIdx = 0; charIdx < cleanLine.length; charIdx++) {
+        const char = cleanLine[charIdx];
+        if (escape) { escape = false; continue; }
+        if (char === '\\') { escape = true; continue; }
+        if (char === '"' && !inSingleQuote) { inDoubleQuote = !inDoubleQuote; continue; }
+        if (char === "'" && !inDoubleQuote) { inSingleQuote = !inSingleQuote; continue; }
+        if (!inDoubleQuote && !inSingleQuote) {
+          if (char === '{' || char === '[') openCount++;
+          if (char === '}' || char === ']') closeCount++;
+        }
+      }
+      netBraces = openCount - closeCount;
+    }
+
+    // B. Match strict patterns
+    let matched = false;
+    if (inContext && !cleanLine.includes('CONTEXT {')) {
+      const tempNesting = contextNesting + netBraces;
+      if (tempNesting === 0 && cleanLine === '}') {
+        matched = true;
+        inContext = false;
+        contextNesting = 0;
+      } else {
+        if (contextNesting === 1) {
+          const simplePattern = /^[a-zA-Z0-9_\-]+:\s*("[^"]*"|[0-9]+(\.[0-9]+)?|true|false)\s*,?$/;
+          const nestedStartPattern = /^[a-zA-Z0-9_\-]+:\s*(\{|\[)\s*$/;
+          matched = simplePattern.test(cleanLine) || nestedStartPattern.test(cleanLine);
+        } else {
+          const nestedKeyValuePattern = /^("[a-zA-Z0-9_\-]+"|[a-zA-Z0-9_\-]+):\s*("[^"]*"|[0-9]+(\.[0-9]+)?|true|false|(\{|\[))\s*,?$/;
+          const arrayItemPattern = /^("[^"]*"|[0-9]+(\.[0-9]+)?|true|false)\s*,?$/;
+          const closingPattern = /^(\{|\[|\}|\]),?$/;
+          matched = nestedKeyValuePattern.test(cleanLine) || arrayItemPattern.test(cleanLine) || closingPattern.test(cleanLine);
+        }
+        contextNesting = tempNesting;
+      }
+    } else {
+      for (const pattern of patterns) {
+        if (pattern.test(cleanLine)) {
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    if (!matched) {
+      showError(lineNum, `Comando inválido, caractere estranho ou erro de sintaxe detectado: "${cleanLine}"`, `Remova caracteres inválidos (como pontos '.', vírgulas ',' em locais incorretos ou termos não suportados) para que a DSL possa ser compilada.`);
+      return;
+    }
+
+    // C. Detect reserved words in lowercase
+    const tokens = cleanLine.split(/[\s"{}()]+/);
+    for (const token of tokens) {
+      if (reservedWordsLower.includes(token.toLowerCase()) && token !== token.toUpperCase()) {
+        showError(lineNum, `Palavra reservada '${token}' escrita em caixa baixa ou mista.`, `A DSL diferencia maiúsculas de minúsculas. Escreva sempre em letras maiúsculas: "${token.toUpperCase()}".`);
+        return;
+      }
+    }
+
+    // D. Check block presence
+    for (const key of Object.keys(mandatoryBlocks)) {
+      if (cleanLine.toUpperCase().includes(key + ' {') || cleanLine.toUpperCase().startsWith(key + ' "') || cleanLine.toUpperCase() === key) {
+        mandatoryBlocks[key] = true;
+      }
+    }
+
+    // E. Detailed check inside CONTEXT
+    if (inContext && !cleanLine.includes('CONTEXT {') && contextNesting >= 1) {
+      if (cleanLine.includes(':')) {
+        const parts = cleanLine.split(':');
+        const key = parts[0].trim();
+        const valuePart = parts.slice(1).join(':').trim();
+        const valueClean = valuePart.replace(/,$/, '').trim();
+
+        if (contextNesting === 1) {
+          const nextLineIdx = i + 1;
+          let nextLine = '';
+          for (let j = nextLineIdx; j < lines.length; j++) {
+            const nl = lines[j].split('//')[0].trim();
+            if (nl) {
+              nextLine = nl;
+              break;
+            }
+          }
+          const isLastItem = nextLine === '}';
+          if (!valuePart.endsWith(',') && !isLastItem && !valueClean.endsWith('{') && !valueClean.endsWith('[')) {
+            showError(lineNum, `Falta uma vírgula ',' para separar este dado do próximo no CONTEXT.`, `Adicione uma vírgula no final da linha: "${cleanLine},".`);
+            return;
+          }
+        }
+
+        if (valueClean && isNaN(Number(valueClean)) && valueClean !== 'true' && valueClean !== 'false' && !valueClean.startsWith('{') && !valueClean.startsWith('[')) {
+          if (!valueClean.startsWith('"') || !valueClean.endsWith('"')) {
+            showError(lineNum, `O valor de texto '${valueClean}' não está entre aspas duplas.`, `Strings na DSL devem ser encapsuladas em aspas: "${key}: \\"${valueClean}\\"${valuePart.endsWith(',') ? ',' : ''}".`);
+            return;
+          }
+        }
+      }
+    }
+
+    // F. Detailed check outside CONTEXT
+    if (!inContext && !cleanLine.includes('CONTEXT {')) {
+      if (cleanLine.includes(',')) {
+        showError(lineNum, `Vírgula ',' indevida encontrada fora do bloco CONTEXT.`, `Remova a vírgula do final da linha. Os blocos FLOW, REQUIRE e outros não utilizam vírgulas.`);
+        return;
+      }
+    }
+  }
+
+  // 3. Mandatory blocks check
+  for (const [key, present] of Object.entries(mandatoryBlocks)) {
+    if (!present) {
+      showError(null, `Bloco obrigatório '${key}' ausente ou com sintaxe incorreta.`, `Toda DSL funcional precisa conter os blocos INTENT, CONTEXT, REQUIRE, FLOW e OUTPUT.`);
+      return;
+    }
+  }
+
+  showSuccess();
+}
+
+function updateFlowPreview() {
+  const codeEl = document.getElementById('playground-code');
+  const typeEl = document.getElementById('playground-type');
+  const container = document.getElementById('flow-preview-container');
+  const canvas = document.getElementById('flow-preview-canvas');
+
+  if (!codeEl || !typeEl || !container || !canvas) return;
+
+  const code = codeEl.value;
+  const isDsl = typeEl.value === 'dsl';
+  
+  if (!isDsl || !code.trim()) {
+    container.style.display = 'none';
+    const panel = document.getElementById('editor-lint-panel');
+    if (panel) panel.style.display = 'none';
+    return;
+  }
+
+  runEditorLinter(code);
+  
+  try {
+    canvas.innerHTML = '';
+    
+    const flowMatch = code.match(/FLOW\s*\{([\s\S]*)\}/i);
+    if (!flowMatch) {
+      canvas.innerHTML = '<span style="color: var(--text-muted); font-size: 11px;">Escreva um bloco FLOW { ... } na DSL para visualizar o fluxo...</span>';
+      container.style.display = 'block';
+      return;
+    }
+    
+    const flowContent = flowMatch[1];
+    const lines = flowContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    
+    let currentBlock = canvas;
+    let blockStack = [canvas];
+    let indentLevel = 0;
+    
+    for (const line of lines) {
+      if (line.includes('{')) {
+        const blockType = line.split('{')[0].trim().toUpperCase() || 'BLOCK';
+        const blockDiv = document.createElement('div');
+        blockDiv.className = 'flow-block';
+        blockDiv.style.borderLeft = '3px solid ' + (blockType.includes('PARALLEL') ? 'var(--warning)' : 'var(--primary)');
+        blockDiv.style.paddingLeft = '10px';
+        blockDiv.style.margin = '4px 0';
+        blockDiv.style.background = 'rgba(255, 255, 255, 0.02)';
+        blockDiv.style.borderRadius = '4px';
+        blockDiv.style.padding = '8px';
+        
+        const label = document.createElement('div');
+        label.style.fontWeight = 'bold';
+        label.style.fontSize = '10px';
+        label.style.color = blockType.includes('PARALLEL') ? 'var(--warning)' : 'var(--primary)';
+        label.innerText = blockType;
+        blockDiv.appendChild(label);
+        
+        const stepsContainer = document.createElement('div');
+        stepsContainer.className = 'steps-container';
+        stepsContainer.style.display = 'flex';
+        stepsContainer.style.flexDirection = blockType.includes('PARALLEL') ? 'row' : 'column';
+        stepsContainer.style.flexWrap = 'wrap';
+        stepsContainer.style.gap = '8px';
+        stepsContainer.style.marginTop = '4px';
+        blockDiv.appendChild(stepsContainer);
+        
+        currentBlock.appendChild(blockDiv);
+        blockStack.push(stepsContainer);
+        currentBlock = stepsContainer;
+        indentLevel++;
+      } else if (line.includes('}')) {
+        if (blockStack.length > 1) {
+          blockStack.pop();
+          currentBlock = blockStack[blockStack.length - 1];
+        } else {
+          currentBlock = canvas;
+        }
+        indentLevel = Math.max(0, indentLevel - 1);
+      } else if (line.toUpperCase().startsWith('EXECUTE') || line.toUpperCase().startsWith('ENCRYPT') || line.toUpperCase().startsWith('DECRYPT') || line.toUpperCase().startsWith('VERIFY')) {
+        const parts = line.split(/\s+/);
+        const verb = parts[0].toUpperCase();
+        const target = parts.slice(1).join(' ').replace(/['"{}]/g, '').trim();
+        const stepDiv = document.createElement('div');
+        stepDiv.className = 'flow-step';
+        stepDiv.style.background = 'rgba(16, 185, 129, 0.05)';
+        stepDiv.style.border = '1px solid var(--secondary)';
+        stepDiv.style.borderRadius = '6px';
+        stepDiv.style.padding = '4px 10px';
+        stepDiv.style.fontSize = '11px';
+        stepDiv.style.display = 'inline-flex';
+        stepDiv.style.alignItems = 'center';
+        stepDiv.style.gap = '6px';
+        
+        stepDiv.innerHTML = `
+          <span style="color: var(--secondary); font-weight: bold;">●</span>
+          <span>${verb}: <strong>${target}</strong></span>
+        `;
+        
+        currentBlock.appendChild(stepDiv);
+      }
+    }
+    
+    if (canvas.children.length === 0) {
+      canvas.innerHTML = '<span style="color: var(--text-muted); font-size: 11px;">Estrutura do fluxo vazia...</span>';
+    }
+    
+    container.style.display = 'block';
+  } catch (err) {
+    canvas.innerHTML = '<span style="color: var(--error); font-size: 11px;">Erro no preview: ' + err.message + '</span>';
+    container.style.display = 'block';
+  }
+}
+
+function downloadPostmanCollection() {
+  window.open('/api/export/postman', '_blank');
+}
+
+function downloadNodeSDK() {
+  window.open('/api/export/sdk', '_blank');
+}
+
+// Notification Toast Helper
+/**
+ * @description Apresenta uma notificação flutuante holográfica de feedback instantâneo.
+ * @param {string} message - Mensagem amigável a apresentar ao utilizador.
+ * @param {'success' | 'warning' | 'error' | 'info'} [type='success'] - Categoria visual da notificação.
+ */
+function showToast(message, type = 'success') {
+  let toast = document.getElementById('inp-global-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'inp-global-toast';
+    toast.className = 'inp-toast';
+    document.body.appendChild(toast);
+  }
+  const icons = {
+    success: '✓',
+    warning: '⚠️',
+    error: '✕',
+    info: 'ℹ️'
+  };
+  const colors = {
+    success: '#00ff9d',
+    warning: '#f59e0b',
+    error: '#f43f5e',
+    info: '#00f5ff'
+  };
+  toast.innerHTML = `<span style="color: ${colors[type] || '#00ff9d'}; font-size: 16px;">${icons[type] || '✓'}</span> <span>${message}</span>`;
+  toast.classList.add('show');
+  
+  if (window._toastTimeout) {
+    clearTimeout(window._toastTimeout);
+  }
+  window._toastTimeout = setTimeout(() => {
+    toast.classList.remove('show');
+  }, 3200);
+}
+
+/**
+ * @description Copia um snippet de código para a área de transferência com feedback visual futurista.
+ * @param {string} text - Texto ou código a ser copiado.
+ * @param {HTMLElement} [buttonEl] - Elemento do botão que acionou a cópia para feedback instantâneo.
+ */
+function copySnippet(text, buttonEl) {
+  const onSuccess = () => {
+    showToast('✓ Copiado com Sucesso!');
+    if (buttonEl && buttonEl.innerText) {
+      const originalText = buttonEl.innerText;
+      buttonEl.innerText = '✓ Copiado com Sucesso!';
+      buttonEl.style.borderColor = 'var(--emerald)';
+      buttonEl.style.color = '#00ff9d';
+      buttonEl.style.boxShadow = '0 0 15px rgba(0, 255, 157, 0.35)';
+      setTimeout(() => {
+        buttonEl.innerText = originalText;
+        buttonEl.style.borderColor = '';
+        buttonEl.style.color = '';
+        buttonEl.style.boxShadow = '';
+      }, 2000);
+    }
+  };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(onSuccess).catch(() => {
+      fallbackCopy(text, onSuccess);
+    });
+  } else {
+    fallbackCopy(text, onSuccess);
+  }
+}
+
+/**
+ * @description Mecanismo de contingência para cópia em contextos não seguros ou navegadores legados.
+ * @param {string} text - Texto a ser copiado.
+ * @param {Function} [callback] - Função executada após o sucesso da cópia.
+ */
+function fallbackCopy(text, callback) {
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.style.position = 'fixed';
+  textArea.style.left = '-9999px';
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  try {
+    document.execCommand('copy');
+    if (callback) {
+      callback();
+    } else {
+      showToast('✓ Copiado com Sucesso!');
+    }
+  } catch (err) {
+    console.error('Erro ao copiar snippet:', err);
+  }
+  document.body.removeChild(textArea);
+}
+
+// Try snippet button action
+function trySnippet(presetKey) {
+  const select = document.getElementById('playground-presets');
+  if (select) {
+    select.value = presetKey;
+    loadPlaygroundPreset();
+  }
+  switchTab(null, 'tab-playground');
+}
+
+// FAQ Accordion toggler
+function toggleFaqAccordion(element) {
+  const isOpen = element.classList.contains('open');
+  document.querySelectorAll('.faq-card').forEach(el => el.classList.remove('open'));
+  if (!isOpen) {
+    element.classList.add('open');
+  }
+}
+
+// Exec intent from Playground
+async function runPlaygroundIntent() {
+  const codeEl = document.getElementById('playground-code');
+  const typeEl = document.getElementById('playground-type');
+  const userEl = document.getElementById('play-user-id');
+  const permsEl = document.getElementById('play-permissions');
+  const statusBadge = document.getElementById('play-status-badge');
+  const convAlert = document.getElementById('play-conversational-alert');
+
+  if (!codeEl || !typeEl || !userEl || !permsEl || !statusBadge) return;
+
+  const text = codeEl.value;
+  const type = typeEl.value;
+  const userId = userEl.value;
+  const permsString = permsEl.value;
+  const permissions = permsString.split(',').map(s => s.trim()).filter(s => s.length > 0);
+
+  statusBadge.innerText = 'Executando...';
+  statusBadge.className = 'badge badge-running';
+
+  if (convAlert) {
+    convAlert.style.display = 'none';
+  }
+
+  try {
+    const res = await fetch('/api/intent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        type,
+        securityContext: { userId, permissions }
+      })
+    });
+
+    const data = await res.json();
+    
+    // Render JSON formatting output
+    const jsonOutput = document.getElementById('play-result-json');
+    if (jsonOutput) {
+      jsonOutput.innerText = JSON.stringify(data, null, 2);
+    }
+
+    // Render conversational alert if available
+    const convText = document.getElementById('play-conversational-text');
+    if (data.conversationalResponse && convAlert && convText) {
+      convText.innerText = data.conversationalResponse;
+      convAlert.style.display = 'block';
+    }
+
+    if (data.success && data.result && data.result.status === 'COMPLETED') {
+      statusBadge.innerText = 'Sucesso';
+      statusBadge.className = 'badge badge-success';
+    } else {
+      statusBadge.innerText = 'Falha';
+      statusBadge.className = 'badge badge-error';
+    }
+
+    // Render execution path timeline
+    const timeline = document.getElementById('play-timeline');
+    if (timeline) {
+      if (data.result && data.result.steps && data.result.steps.length > 0) {
+        timeline.innerHTML = data.result.steps.map((s, idx) => {
+          const isCompleted = s.status === 'COMPLETED';
+          const duration = s.durationMs || s.duration_ms || 0;
+          const stepId = 'step-' + idx;
+          
+          return `
+            <div class="timeline-item">
+              <div class="timeline-dot ${isCompleted ? 'completed' : 'failed'}"></div>
+              <div class="timeline-card">
+                <div class="timeline-header" data-toggle-target="${stepId}">
+                  <span class="timeline-action">${s.action}</span>
+                  <div style="display: flex; gap: 10px; align-items: center;">
+                    <span class="badge ${isCompleted ? 'badge-success' : 'badge-error'}">${s.status}</span>
+                    <span class="timeline-time">${duration}ms</span>
+                  </div>
+                </div>
+                <div id="${stepId}" class="timeline-details" style="display: none;">
+                  <div><strong>Input Context:</strong></div>
+                  <pre>${JSON.stringify(s.input || {}, null, 2)}</pre>
+                  <div style="margin-top: 6px;"><strong>Output Context / Result:</strong></div>
+                  <pre>${JSON.stringify(s.output || {}, null, 2)}</pre>
+                  ${s.error ? `<div style="color: var(--error); margin-top: 6px;"><strong>Erro:</strong> ${s.error}</div>` : ''}
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } else {
+        timeline.innerHTML = '<div style="color: var(--text-muted); font-size: 13px; padding-left: 5px;">Nenhum passo no fluxo ou falha prévia de análise.</div>';
+      }
+    }
+
+    // Refresh stats, audit forensics and client executions table
+    loadHomeStats();
+    if (typeof loadDatabaseLogs === 'function') loadDatabaseLogs();
+    if (typeof loadClientExecutions === 'function') loadClientExecutions();
+
+  } catch (err) {
+    statusBadge.innerText = 'Erro HTTP';
+    statusBadge.className = 'badge badge-error';
+    const jsonOutput = document.getElementById('play-result-json');
+    if (jsonOutput) {
+      jsonOutput.innerText = 'Erro de requisição: ' + err.message;
+    }
+  }
+}
+
+function toggleDetails(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+}
+
+// Load active stats for home Welcome
+let prevStats = { active: -1, total: -1, latency: -1, rate: -1 };
+
+function animateCounter(el, targetValue, suffix = '') {
+  if (!el || isNaN(targetValue)) return;
+  const duration = 800; // ms
+  const startTime = performance.now();
+  
+  function update(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    // Ease out quad
+    const easeProgress = progress * (2 - progress);
+    const current = Math.floor(easeProgress * targetValue);
+    el.innerText = current + suffix;
+    if (progress < 1) {
+      requestAnimationFrame(update);
+    } else {
+      el.innerText = targetValue + suffix;
+    }
+  }
+  requestAnimationFrame(update);
+}
+
+async function loadHomeStats() {
+  try {
+    const res = await fetch('/api/dashboard/stats');
+    const data = await res.json();
+    if (data.success) {
+      const activeEl = document.getElementById('stat-active');
+      const totalEl = document.getElementById('stat-total');
+      const latencyEl = document.getElementById('stat-latency');
+      const successRateEl = document.getElementById('stat-success-rate');
+
+      const activeVal = data.stats.activeServices || 0;
+      const totalVal = data.stats.totalExecutions || 0;
+      const latencyVal = Math.round(data.stats.avgDurationMs || 0);
+      
+      const completed = data.stats.completedExecutions || 0;
+      const total = data.stats.totalExecutions || 0;
+      const rateVal = total > 0 ? Math.round((completed / total) * 100) : 100;
+
+      if (activeEl && prevStats.active !== activeVal) {
+        animateCounter(activeEl, activeVal, '');
+        prevStats.active = activeVal;
+      }
+      if (totalEl && prevStats.total !== totalVal) {
+        animateCounter(totalEl, totalVal, '');
+        prevStats.total = totalVal;
+      }
+      if (latencyEl && prevStats.latency !== latencyVal) {
+        animateCounter(latencyEl, latencyVal, ' ms');
+        prevStats.latency = latencyVal;
+      }
+      if (successRateEl && prevStats.rate !== rateVal) {
+        animateCounter(successRateEl, rateVal, '%');
+        prevStats.rate = rateVal;
+      }
+    }
+  } catch (err) {
+    console.error('Home stats failed:', err);
+  }
+}
+
+// Carregamento público do catálogo de microsserviços ativos (Visão de Interesse Geral)
+/**
+ * @description Apresenta o catálogo público de microsserviços com saúde, métricas agregadas e capacidades.
+ * Isola totalmente controles administrativos e botões de injeção de caos para garantir segurança.
+ *
+ * @security Não expõe endpoints de rede física nem controlos operacionais para visitantes anónimos.
+ * @audit Permite a transparência e conformidade de catálogo no protocolo.
+ */
+async function loadActiveServices() {
+  try {
+    const res = await fetch('/api/services/all');
+    const data = await res.json();
+    const listContainer = document.getElementById('home-services-list');
+    if (!listContainer) return;
+    
+    if (data.services && data.services.length > 0) {
+      listContainer.innerHTML = data.services.map(s => {
+        const caps = s.capabilities || [];
+        const capBadges = caps.map(c => `<span class="cap-badge">${c.verb} ${c.target}</span>`).join('');
+        
+        let statusClass = s.active ? 'online' : 'offline';
+        let statusLabel = s.active ? 'ONLINE' : 'OFFLINE';
+        if (s.active && s.status === 'DEGRADED') {
+          statusClass = 'degraded';
+          statusLabel = 'DEGRADED (Proativo)';
+        }
+        
+        const latencyText = s.avgLatency ? `⏱️ <strong>${s.avgLatency}ms</strong>` : 'N/A';
+        const healthScoreText = s.healthScore !== undefined ? `🩺 <strong>${s.healthScore}%</strong>` : `⭐ <strong>${s.trustScore}%</strong>`;
+
+        return `
+          <div class="service-card ${s.active ? 'active' : 'inactive'} ${s.status === 'DEGRADED' ? 'degraded' : ''}">
+            <div class="service-header">
+              <span class="service-name">${s.name}</span>
+              <span class="status-indicator ${statusClass}">
+                <span class="dot"></span> ${statusLabel}
+              </span>
+            </div>
+            <div style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 8px; display: flex; gap: 12px; flex-wrap: wrap;">
+              <span>Score de Confiança: ${healthScoreText}</span>
+              <span>Nível de Segurança: <strong>${s.securityLevel}</strong></span>
+              <span>Latência Média: ${latencyText}</span>
+            </div>
+            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-top: 10px; margin-bottom: 6px;">Capacidades Registadas:</div>
+            <div class="service-caps">${capBadges}</div>
+          </div>
+        `;
+      }).join('');
+    } else {
+      listContainer.innerHTML = `
+        <div style="text-align: center; padding: 30px; border: 1px dashed var(--card-border); border-radius: 12px;">
+          <div style="font-size: 24px; margin-bottom: 8px;">🔌</div>
+          <div style="font-size: 14px; font-weight: 700; margin-bottom: 4px;">Nenhum microsserviço ativo</div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Inicie o serviço de pagamentos simulado para visualização no catálogo.</div>
+          <pre style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; font-family: monospace; font-size: 11px; display: inline-block;">npm run mock-service</pre>
+        </div>
+      `;
+    }
+  } catch (err) {
+    console.error('Falha ao carregar catálogo público de serviços:', err);
+  }
+}
+
+/**
+ * @description Carrega o painel operacional de microsserviços na aba de Governança (Admin).
+ * Inclui endpoints físicos, injeção de falhas (Chaos Engineering) e alternância de estado de serviços.
+ *
+ * @security Exclusivo para administradores autenticados com permissão de gestão de rede e caos.
+ * @audit Cada injeção de falha e alteração de estado é rastreada na base de dados.
+ */
+async function loadAdminServiceControls() {
+  try {
+    const res = await authFetch('/api/services/all');
+    const data = await res.json();
+    const listContainer = document.getElementById('admin-services-list');
+    if (!listContainer) return;
+    
+    if (data.services && data.services.length > 0) {
+      listContainer.innerHTML = data.services.map(s => {
+        const caps = s.capabilities || [];
+        const capBadges = caps.map(c => `<span class="cap-badge">${c.verb} ${c.target}</span>`).join('');
+        
+        let statusClass = s.active ? 'online' : 'offline';
+        let statusLabel = s.active ? 'ONLINE' : 'OFFLINE';
+        if (s.active && s.status === 'DEGRADED') {
+          statusClass = 'degraded';
+          statusLabel = 'DEGRADED (Proativo)';
+        }
+        
+        const latencyText = s.avgLatency ? `⏱️ <strong>${s.avgLatency}ms</strong>` : 'N/A';
+        const healthScoreText = s.healthScore !== undefined ? `🩺 <strong>${s.healthScore}%</strong>` : `⭐ <strong>${s.trustScore}%</strong>`;
+
+        return `
+          <div class="service-card ${s.active ? 'active' : 'inactive'} ${s.status === 'DEGRADED' ? 'degraded' : ''}">
+            <div class="service-header">
+              <span class="service-name">${s.name}</span>
+              <span class="status-indicator ${statusClass}">
+                <span class="dot"></span> ${statusLabel}
+              </span>
+            </div>
+            <div style="font-size: 12.5px; color: var(--text-muted); margin-bottom: 6px;">
+              Endpoint Físico: <span class="service-url">${s.endpoint || 'Local Handler'}</span>
+            </div>
+            <div style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px; display: flex; gap: 10px; flex-wrap: wrap;">
+              <span>Score de Confiança: ${healthScoreText}</span>
+              <span>Nível: <strong>${s.securityLevel}</strong></span>
+              <span>Latência Média: ${latencyText}</span>
+            </div>
+            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-top: 10px;">Capacidades:</div>
+            <div class="service-caps">${capBadges}</div>
+            
+            <div style="margin-top: 12px; border-top: 1px solid var(--card-border); padding-top: 12px;">
+              <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">Simulador de Caos (Resiliência):</div>
+              <div class="chaos-btn-group">
+                <button class="chaos-btn ${s.chaosState === 'HEALTHY' ? 'active healthy' : ''}" data-service-id="${s.id}" data-chaos-state="HEALTHY">
+                  🟢 Saudável
+                </button>
+                <button class="chaos-btn ${s.chaosState === 'ERROR_500' ? 'active error' : ''}" data-service-id="${s.id}" data-chaos-state="ERROR_500">
+                  🔴 Erro 500
+                </button>
+                <button class="chaos-btn ${s.chaosState === 'LATENCY_5S' ? 'active latency' : ''}" data-service-id="${s.id}" data-chaos-state="LATENCY_5S">
+                  🟡 Latência 5s
+                </button>
+              </div>
+            </div>
+
+            <div style="margin-top: 15px; display: flex; justify-content: flex-end;">
+              <button class="btn-toggle-service ${s.active ? 'btn-deactivate' : 'btn-activate'}" data-service-id="${s.id}">
+                ${s.active ? '🔌 Desativar Serviço' : '⚡ Ativar Serviço'}
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } else {
+      listContainer.innerHTML = `
+        <div style="text-align: center; padding: 30px; border: 1px dashed var(--card-border); border-radius: 12px;">
+          <div style="font-size: 24px; margin-bottom: 8px;">🔌</div>
+          <div style="font-size: 14px; font-weight: 700; margin-bottom: 4px;">Nenhum microsserviço registado</div>
+          <div style="font-size: 12px; color: var(--text-muted);">Inicie os microsserviços do cluster para operações e testes de resiliência.</div>
+        </div>
+      `;
+    }
+  } catch (err) {
+    console.error('Falha ao carregar controlos de administrador dos serviços:', err);
+  }
+}
+
+/**
+ * @description Carrega o histórico forense de execuções persistidas na aba de Auditoria.
+ *
+ * @security Autenticado com cabeçalho Bearer do auditor ou administrador.
+ * @audit Garante rastreabilidade total das transações executadas no PostgreSQL.
+ */
+async function loadDatabaseLogs() {
+  try {
+    const res = await authFetch('/api/dashboard/executions');
+    const data = await res.json();
+    const tableBody = document.querySelector('#audit-db-executions-table tbody');
+    if (!tableBody) return;
+    
+    if (data.success && data.executions && data.executions.length > 0) {
+      tableBody.innerHTML = data.executions.map(e => {
+        const isCompleted = e.status === 'COMPLETED';
+        const statusClass = isCompleted ? 'badge-success' : (e.status === 'RUNNING' ? 'badge-running' : 'badge-error');
+        const summary = e.error || (e.output ? 'Sucesso (JSON)' : '-');
+        const start = new Date(e.startedAt).toLocaleString();
+        const duration = e.completedAt ? `${Math.max(1, new Date(e.completedAt) - new Date(e.startedAt))}ms` : 'Em curso';
+        const user = e.userId || 'Anónimo / Sistema';
+        
+        return `
+          <tr>
+            <td style="font-family: monospace; font-size: 11.5px; color: var(--secondary);">${e.id}</td>
+            <td><span class="badge ${statusClass}">${e.status}</span></td>
+            <td style="font-size: 12px; color: var(--text-muted);">${user}</td>
+            <td style="font-size: 12px;">${start}</td>
+            <td style="font-size: 12px; font-family: monospace;">${duration}</td>
+            <td style="font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${summary}">${summary}</td>
+          </tr>
+        `;
+      }).join('');
+    } else {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 20px;">Nenhuma execução encontrada ou acesso restrito a administradores e auditores.</td>
+        </tr>
+      `;
+    }
+  } catch (err) {
+    console.error('Falha ao carregar registos de execuções do PostgreSQL:', err);
+  }
+}
+
+/**
+ * @description Carrega o histórico de execuções próprio do cliente autenticado na Área de Cliente.
+ *
+ * @security Isola estritamente as execuções do utilizador em sessão.
+ * @audit Permite conferência de quota consumida e transações pelo próprio cliente.
+ */
+async function loadClientExecutions() {
+  try {
+    const res = await authFetch('/api/dashboard/executions');
+    const data = await res.json();
+    const tableBody = document.getElementById('client-executions-tbody');
+    if (!tableBody) return;
+    
+    if (data.success && data.executions && data.executions.length > 0) {
+      tableBody.innerHTML = data.executions.map(e => {
+        const isCompleted = e.status === 'COMPLETED';
+        const statusClass = isCompleted ? 'badge-success' : (e.status === 'RUNNING' ? 'badge-running' : 'badge-error');
+        const summary = e.error || (e.output ? 'Sucesso (JSON)' : '-');
+        const start = new Date(e.startedAt).toLocaleString();
+        const duration = e.completedAt ? `${Math.max(1, new Date(e.completedAt) - new Date(e.startedAt))}ms` : 'Em curso';
+        
+        return `
+          <tr>
+            <td style="font-family: monospace; font-size: 11.5px; color: var(--secondary);">${e.id}</td>
+            <td><span class="badge ${statusClass}">${e.status}</span></td>
+            <td style="font-size: 12px;">${start}</td>
+            <td style="font-size: 12px; font-family: monospace;">${duration}</td>
+            <td style="font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${summary}">${summary}</td>
+          </tr>
+        `;
+      }).join('');
+    } else {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 20px;">Ainda não foram submetidas intenções nesta conta.</td>
+        </tr>
+      `;
+    }
+  } catch (err) {
+    console.error('Falha ao carregar histórico próprio do cliente:', err);
+  }
+}
+
+// Check DB Status
+async function checkDbConnection() {
+  const badge = document.getElementById('db-status');
+  if (!badge) return;
+  try {
+    const res = await fetch('/api/db-status');
+    const data = await res.json();
+    if (data.success && data.connected) {
+      badge.className = 'status-badge online';
+      badge.innerHTML = '<span class="dot"></span> DB: PostgreSQL Connected';
+    } else {
+      badge.className = 'status-badge offline';
+      badge.innerHTML = '<span class="dot"></span> DB: PostgreSQL Offline';
+    }
+  } catch (err) {
+    badge.className = 'status-badge offline';
+    badge.innerHTML = '<span class="dot"></span> DB: Error';
+  }
+}
+
+// Expose functions globally to window for HTML onclick attributes compatibility
+window.switchTab = switchTab;
+window.loadPlaygroundPreset = loadPlaygroundPreset;
+window.updateFlowPreview = updateFlowPreview;
+
+// Telemetry DAG Layout and SSE Event Handlers
+let currentFlowData = null;
+let currentLayoutMode = 'vertical';
+let nodeStatuses = {}; // key: idx, value: { classes: [], text: '', color: '' }
+let edgeStatuses = {}; // key: idx, value: 'active' | 'completed' | 'rollback'
+let telemetryChart = null;
+
+function renderTelemetryDAG(flow) {
+  const wrap = document.getElementById('live-visualizer-svg-wrap');
+  if (!wrap) return;
+  
+  wrap.innerHTML = '';
+  let nodes = [];
+  let index = 0;
+  
+  function walk(items, depth = 0, parentX = 300) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const stepIdx = index++;
+      
+      const node = {
+        index: stepIdx,
+        label: item.action || item.type,
+        type: item.type,
+        depth: depth,
+        width: 190,
+        height: 44
+      };
+      nodes.push(node);
+      
+      if (item.steps) {
+        walk(item.steps, depth + 1, parentX);
+      }
+    }
+  }
+  
+  walk(flow);
+  
+  const mode = currentLayoutMode;
+  let svgWidth = 600;
+  let svgHeight = 220;
+  
+  if (mode === 'vertical') {
+    svgWidth = 600;
+    svgHeight = 60 + nodes.length * 80;
+    nodes.forEach((node, idx) => {
+      node.x = 300;
+      node.y = 40 + idx * 80;
+    });
+  } else if (mode === 'horizontal') {
+    svgWidth = 100 + nodes.length * 210;
+    svgHeight = 240;
+    nodes.forEach((node, idx) => {
+      node.x = 100 + idx * 210;
+      node.y = 120;
+    });
+  } else if (mode === 'radial') {
+    svgWidth = 600;
+    svgHeight = 380;
+    const centerX = 300;
+    const centerY = 190;
+    const R = 130;
+    
+    if (nodes.length > 0) {
+      nodes[0].x = centerX;
+      nodes[0].y = centerY;
+      nodes[0].isCentral = true;
+    }
+    
+    const satellitesCount = nodes.length - 1;
+    for (let i = 1; i < nodes.length; i++) {
+      const angle = ((i - 1) / satellitesCount) * 2 * Math.PI - Math.PI / 2;
+      nodes[i].x = centerX + R * Math.cos(angle);
+      nodes[i].y = centerY + R * Math.sin(angle);
+      nodes[i].isCentral = false;
+    }
+  } else if (mode === 'matrix') {
+    svgWidth = 600;
+    svgHeight = 80 + nodes.length * 75;
+    nodes.forEach((node, idx) => {
+      node.x = (idx % 2 === 0) ? 180 : 420;
+      node.y = 50 + idx * 75;
+    });
+  } else if (mode === 'stack') {
+    svgWidth = 600;
+    svgHeight = 80 + nodes.length * 65;
+    nodes.forEach((node, idx) => {
+      node.x = 300 - idx * 10;
+      node.y = 50 + idx * 65;
+    });
+  }
+  
+  let svgContent = `<svg width="100%" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" style="background: transparent;">`;
+  svgContent += `
+    <defs>
+      <filter id="glow-running" x="-40%" y="-40%" width="180%" height="180%">
+        <feGaussianBlur stdDeviation="8" result="blur" />
+        <feComposite in="SourceGraphic" in2="blur" operator="over" />
+      </filter>
+    </defs>
+  `;
+
+  // Draw Edges
+  if (mode === 'radial') {
+    const from = nodes[0];
+    for (let i = 1; i < nodes.length; i++) {
+      const to = nodes[i];
+      const edgeClass = edgeStatuses[i - 1] === 'completed' ? 'dag-edge completed' : 
+                        (edgeStatuses[i - 1] === 'active' ? 'dag-edge active' : 
+                        (edgeStatuses[i - 1] === 'rollback' ? 'dag-edge rollback' : 'dag-edge'));
+      
+      const flowStyle = edgeStatuses[i - 1] === 'active' ? 'display: block;' : 'display: none;';
+      
+      svgContent += `
+        <path id="dag-edge-${i - 1}" d="M ${from.x} ${from.y} L ${to.x} ${to.y}" class="${edgeClass}" />
+        <g id="dag-edge-flow-${i - 1}" style="${flowStyle}">
+          <circle r="6" fill="#00f5ff" filter="url(#glow-running)">
+            <animateMotion dur="0.8s" repeatCount="indefinite" path="M ${from.x} ${from.y} L ${to.x} ${to.y}" />
+          </circle>
+        </g>
+      `;
+    }
+  } else {
+    for (let i = 0; i < nodes.length - 1; i++) {
+      const from = nodes[i];
+      const to = nodes[i+1];
+      const edgeClass = edgeStatuses[i] === 'completed' ? 'dag-edge completed' : 
+                        (edgeStatuses[i] === 'active' ? 'dag-edge active' : 
+                        (edgeStatuses[i] === 'rollback' ? 'dag-edge rollback' : 'dag-edge'));
+      
+      const flowStyle = edgeStatuses[i] === 'active' ? 'display: block;' : 'display: none;';
+      
+      let pathD = '';
+      if (mode === 'horizontal') {
+        pathD = `M ${from.x + 95} ${from.y} L ${to.x - 95} ${to.y}`;
+      } else if (mode === 'stack') {
+        pathD = `M ${from.x} ${from.y + 20} L ${to.x} ${to.y - 20}`;
+      } else {
+        pathD = `M ${from.x} ${from.y + 22} L ${to.x} ${to.y - 22}`;
+      }
+      
+      svgContent += `
+        <path id="dag-edge-${i}" d="${pathD}" class="${edgeClass}" />
+        <g id="dag-edge-flow-${i}" style="${flowStyle}">
+          <circle r="6" fill="#00f5ff" filter="url(#glow-running)">
+            <animateMotion dur="0.8s" repeatCount="indefinite" path="${pathD}" />
+          </circle>
+        </g>
+      `;
+    }
+  }
+  
+  // Render nodes with specific classes and shapes based on selected layout
+  nodes.forEach(node => {
+    let nodeClass = 'dag-node';
+    let icon = '⚡';
+    let rx = 10;
+    let ry = 10;
+
+    if (node.type === 'SEQUENCE') {
+      nodeClass += ' dag-node-sequence';
+      icon = '⛓️';
+      rx = 6;
+      ry = 6;
+    } else if (node.type === 'PARALLEL') {
+      nodeClass += ' dag-node-parallel';
+      icon = '♊';
+      rx = 6;
+      ry = 6;
+    } else if (node.type === 'CONDITION') {
+      nodeClass += ' dag-node-condition';
+      icon = '❓';
+      rx = 20;
+      ry = 20;
+    } else if (node.type === 'RETRY') {
+      nodeClass += ' dag-node-retry';
+      icon = '🔁';
+      rx = 12;
+      ry = 12;
+    } else if (node.type === 'TIMEOUT') {
+      nodeClass += ' dag-node-timeout';
+      icon = '⏱️';
+      rx = 12;
+      ry = 12;
+    } else if (node.label.startsWith('ENCRYPT')) {
+      nodeClass += ' dag-node-security';
+      icon = '🔐';
+    } else if (node.label.startsWith('DECRYPT')) {
+      nodeClass += ' dag-node-security';
+      icon = '🔓';
+    } else if (node.label.includes('PAYMENT')) {
+      nodeClass += ' dag-node-payment';
+      icon = '💰';
+    } else if (node.label.includes('INVENTORY')) {
+      nodeClass += ' dag-node-inventory';
+      icon = '📦';
+    } else if (node.label.includes('NOTIFICATION')) {
+      nodeClass += ' dag-node-notification';
+      icon = '✉️';
+    } else {
+      nodeClass += ' dag-node-action';
+    }
+    
+    // Look up status from state cache
+    let statusClass = '';
+    let statusText = 'PENDENTE';
+    let statusColor = 'var(--text-muted)';
+    if (nodeStatuses[node.index]) {
+      statusClass = ' ' + nodeStatuses[node.index].classes.join(' ');
+      statusText = nodeStatuses[node.index].text;
+      statusColor = nodeStatuses[node.index].color;
+    }
+    
+    if (mode === 'radial') {
+      const r = node.isCentral ? 38 : 32;
+      if (node.isCentral) {
+        nodeClass += ' dag-node-central';
+        icon = '🌌';
+      }
+      
+      svgContent += `
+        <g id="dag-node-group-${node.index}">
+          <circle id="dag-node-${node.index}" cx="${node.x}" cy="${node.y}" r="${r}" class="${nodeClass}${statusClass}" />
+          <text x="${node.x}" y="${node.y - 2}" class="dag-node-text" style="font-size: 10px;">${icon} ${node.label.substring(0, 10)}</text>
+          <text id="dag-node-status-${node.index}" x="${node.x}" y="${node.y + 12}" class="dag-node-subtext" style="fill: ${statusColor}; font-size: 8px;">${statusText}</text>
+        </g>
+      `;
+    } else if (mode === 'stack') {
+      svgContent += `
+        <g id="dag-node-group-${node.index}">
+          <polygon id="dag-node-${node.index}" points="${node.x},${node.y-20} ${node.x+120},${node.y} ${node.x},${node.y+20} ${node.x-120},${node.y}" class="${nodeClass}${statusClass}" />
+          <text x="${node.x}" y="${node.y - 2}" class="dag-node-text">${icon} ${node.label}</text>
+          <text id="dag-node-status-${node.index}" x="${node.x}" y="${node.y + 10}" class="dag-node-subtext" style="fill: ${statusColor};">${statusText}</text>
+        </g>
+      `;
+    } else if (mode === 'matrix') {
+      svgContent += `
+        <g id="dag-node-group-${node.index}">
+          <polygon id="dag-node-${node.index}" points="${node.x-95},${node.y} ${node.x-60},${node.y-22} ${node.x+60},${node.y-22} ${node.x+95},${node.y} ${node.x+60},${node.y+22} ${node.x-60},${node.y+22}" class="${nodeClass}${statusClass}" />
+          <text x="${node.x}" y="${node.y - 4}" class="dag-node-text">${icon} ${node.label}</text>
+          <text id="dag-node-status-${node.index}" x="${node.x}" y="${node.y + 12}" class="dag-node-subtext" style="fill: ${statusColor};">${statusText}</text>
+        </g>
+      `;
+    } else {
+      svgContent += `
+        <g id="dag-node-group-${node.index}">
+          <rect id="dag-node-${node.index}" x="${node.x - node.width/2}" y="${node.y - node.height/2}" width="${node.width}" height="${node.height}" rx="${rx}" ry="${ry}" class="${nodeClass}${statusClass}" />
+          <text x="${node.x}" y="${node.y - 4}" class="dag-node-text">${icon} ${node.label}</text>
+          <text id="dag-node-status-${node.index}" x="${node.x}" y="${node.y + 12}" class="dag-node-subtext" style="fill: ${statusColor};">${statusText}</text>
+        </g>
+      `;
+    }
+  });
+  
+  svgContent += `</svg>`;
+  wrap.innerHTML = svgContent;
+}
+
+function addTelemetryLog(msg, type = 'info') {
+  const logBody = document.getElementById('live-telemetry-log-body');
+  if (!logBody) return;
+  
+  if (type === 'start') {
+    logBody.innerHTML = '';
+  }
+  
+  const now = new Date();
+  const timeStr = now.toTimeString().split(' ')[0];
+  
+  let color = '#a5b4fc';
+  let prefix = 'ℹ️';
+  if (type === 'start') { color = '#60a5fa'; prefix = '⚡'; }
+  else if (type === 'step') { color = '#38bdf8'; prefix = '▶️'; }
+  else if (type === 'success') { color = '#34d399'; prefix = '✔️'; }
+  else if (type === 'error') { color = '#f87171'; prefix = '❌'; }
+  else if (type === 'heal') { color = '#c084fc'; prefix = '🤖'; }
+  else if (type === 'heal-info') { color = '#e9d5ff'; prefix = '💡'; }
+  else if (type === 'resolve') { color = '#2dd4bf'; prefix = '🔌'; }
+  else if (type === 'warn') { color = '#fbbf24'; prefix = '⚠️'; }
+  
+  const line = document.createElement('div');
+  line.style.display = 'flex';
+  line.style.gap = '6px';
+  line.style.alignItems = 'flex-start';
+  line.style.color = color;
+  line.style.padding = '2px 0';
+  line.style.borderBottom = '1px solid rgba(255, 255, 255, 0.01)';
+  
+  line.innerHTML = `
+    <span style="color: rgba(255,255,255,0.25); flex-shrink: 0;">[${timeStr}]</span>
+    <span style="flex-shrink: 0;">${prefix}</span>
+    <span style="word-break: break-all;">${msg}</span>
+  `;
+  
+  logBody.appendChild(line);
+  logBody.scrollTop = logBody.scrollHeight;
+}
+
+class TelemetryChart {
+  constructor(canvasId) {
+    this.canvas = document.getElementById(canvasId);
+    if (!this.canvas) return;
+    this.ctx = this.canvas.getContext('2d');
+    this.dataPoints = [];
+    this.maxDataPoints = 40;
+    
+    this.currentSecondLatencies = [];
+    this.currentSecondThroughput = 0;
+    
+    this.init();
+  }
+  
+  init() {
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+    
+    // Initialize with zeros
+    for (let i = 0; i < this.maxDataPoints; i++) {
+      this.dataPoints.push({ latency: 0, throughput: 0 });
+    }
+    
+    // Update every 1 second
+    setInterval(() => {
+      const avgLatency = this.currentSecondLatencies.length > 0
+        ? this.currentSecondLatencies.reduce((a, b) => a + b, 0) / this.currentSecondLatencies.length
+        : 0;
+        
+      this.dataPoints.push({
+        latency: Math.min(avgLatency, 5000),
+        throughput: this.currentSecondThroughput
+      });
+      
+      if (this.dataPoints.length > this.maxDataPoints) {
+        this.dataPoints.shift();
+      }
+      
+      this.currentSecondLatencies = [];
+      this.currentSecondThroughput = 0;
+    }, 1000);
+    
+    this.animate();
+  }
+  
+  resize() {
+    if (!this.canvas) return;
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = rect.width * window.devicePixelRatio;
+    this.canvas.height = rect.height * window.devicePixelRatio;
+    this.ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    this.width = rect.width;
+    this.height = rect.height;
+  }
+  
+  recordStep(durationMs) {
+    this.currentSecondLatencies.push(durationMs);
+    this.currentSecondThroughput++;
+  }
+  
+  animate() {
+    this.draw();
+    requestAnimationFrame(() => this.animate());
+  }
+  
+  draw() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const w = this.width;
+    const h = this.height;
+    
+    ctx.clearRect(0, 0, w, h);
+    
+    const isLight = document.body.classList.contains('light-theme');
+    
+    // Draw Grid
+    ctx.strokeStyle = isLight ? 'rgba(15, 23, 42, 0.05)' : 'rgba(255, 255, 255, 0.03)';
+    ctx.lineWidth = 1;
+    const gridCols = 8;
+    const gridRows = 4;
+    
+    for (let i = 0; i <= gridCols; i++) {
+      const x = (w / gridCols) * i;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+    for (let i = 0; i <= gridRows; i++) {
+      const y = (h / gridRows) * i;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+    
+    // Find limits
+    let maxLat = 100;
+    let maxThrough = 5;
+    for (const pt of this.dataPoints) {
+      if (pt.latency > maxLat) maxLat = pt.latency;
+      if (pt.throughput > maxThrough) maxThrough = pt.throughput;
+    }
+    
+    maxLat = Math.ceil(maxLat / 50) * 50;
+    maxThrough = Math.ceil(maxThrough / 2) * 2;
+    
+    const margin = { top: 25, right: 60, bottom: 20, left: 60 };
+    const chartW = w - margin.left - margin.right;
+    const chartH = h - margin.top - margin.bottom;
+    
+    ctx.font = '500 10px sans-serif';
+    ctx.fillStyle = isLight ? 'rgba(15, 23, 42, 0.5)' : 'rgba(255, 255, 255, 0.4)';
+    
+    // Left scale (Latency)
+    ctx.textAlign = 'right';
+    ctx.fillText(`${maxLat}ms`, margin.left - 8, margin.top + 4);
+    ctx.fillText(`${Math.round(maxLat / 2)}ms`, margin.left - 8, margin.top + chartH / 2 + 4);
+    ctx.fillText('0ms', margin.left - 8, margin.top + chartH + 4);
+    
+    // Right scale (Throughput)
+    ctx.textAlign = 'left';
+    ctx.fillText(`${maxThrough} req/s`, w - margin.right + 8, margin.top + 4);
+    ctx.fillText(`${Math.round(maxThrough / 2)} req/s`, w - margin.right + 8, margin.top + chartH / 2 + 4);
+    ctx.fillText('0 req/s', w - margin.right + 8, margin.top + chartH + 4);
+    
+    const getX = (index) => margin.left + (index / (this.maxDataPoints - 1)) * chartW;
+    const getLatencyY = (val) => margin.top + chartH - (val / maxLat) * chartH;
+    const getThroughputY = (val) => margin.top + chartH - (val / maxThrough) * chartH;
+    
+    const latencyColor = isLight ? '#0284c7' : '#00f5ff';
+    const throughputColor = isLight ? '#7c3aed' : '#a259ff';
+    
+    // Draw Latency line
+    ctx.beginPath();
+    ctx.strokeStyle = latencyColor;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < this.dataPoints.length; i++) {
+      const x = getX(i);
+      const y = getLatencyY(this.dataPoints[i].latency);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    
+    // Fill Latency area
+    ctx.lineTo(getX(this.dataPoints.length - 1), margin.top + chartH);
+    ctx.lineTo(getX(0), margin.top + chartH);
+    ctx.closePath();
+    const latGrad = ctx.createLinearGradient(0, margin.top, 0, margin.top + chartH);
+    latGrad.addColorStop(0, isLight ? 'rgba(2, 132, 199, 0.1)' : 'rgba(0, 245, 255, 0.1)');
+    latGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = latGrad;
+    ctx.fill();
+    
+    // Draw Throughput line
+    ctx.beginPath();
+    ctx.strokeStyle = throughputColor;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < this.dataPoints.length; i++) {
+      const x = getX(i);
+      const y = getThroughputY(this.dataPoints[i].throughput);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    
+    // Fill Throughput area
+    ctx.lineTo(getX(this.dataPoints.length - 1), margin.top + chartH);
+    ctx.lineTo(getX(0), margin.top + chartH);
+    ctx.closePath();
+    const throughGrad = ctx.createLinearGradient(0, margin.top, 0, margin.top + chartH);
+    throughGrad.addColorStop(0, isLight ? 'rgba(124, 60, 237, 0.1)' : 'rgba(162, 89, 255, 0.1)');
+    throughGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = throughGrad;
+    ctx.fill();
+  }
+}
+
+function setupTelemetryListener() {
+  const sseStatus = document.getElementById('sse-status-badge');
+  const liveContainer = document.getElementById('live-visualizer-container');
+  
+  console.log('[Telemetry] Connecting to SSE telemetry...');
+  const source = new EventSource('/api/telemetry');
+  
+  source.onopen = () => {
+    console.log('[Telemetry] SSE connected');
+    if (sseStatus) {
+      sseStatus.innerText = 'Connected';
+      sseStatus.style.color = 'var(--secondary)';
+    }
+  };
+  
+  source.onerror = () => {
+    if (sseStatus) {
+      sseStatus.innerText = 'Disconnected';
+      sseStatus.style.color = 'var(--error)';
+    }
+  };
+  
+  let stepIdToIdx = {};
+
+  // Layout selector change event binding
+  const layoutSelector = document.getElementById('dag-layout-selector');
+  if (layoutSelector) {
+    layoutSelector.value = currentLayoutMode;
+    layoutSelector.onchange = (e) => {
+      currentLayoutMode = e.target.value;
+      if (currentFlowData) {
+        renderTelemetryDAG(currentFlowData);
+      }
+    };
+  }
+
+  source.addEventListener('EXECUTION_STARTED', (e) => {
+    const event = JSON.parse(e.data);
+    stepIdToIdx = {};
+    nodeStatuses = {};
+    edgeStatuses = {};
+    if (liveContainer) {
+      liveContainer.style.display = 'block';
+    }
+    currentFlowData = event.flow;
+    renderTelemetryDAG(event.flow);
+    addTelemetryLog('⚡ Execução da Intenção Iniciada para "' + (event.intentName || event.name || 'Sem Nome') + '"', 'start');
+  });
+  
+  source.addEventListener('STEP_STARTED', (e) => {
+    const event = JSON.parse(e.data);
+    const idx = event.stepIndex;
+    stepIdToIdx[event.stepId] = idx;
+    
+    nodeStatuses[idx] = {
+      classes: ['running'],
+      text: 'EXECUTANDO...',
+      color: '#3b82f6'
+    };
+    edgeStatuses[idx - 1] = 'active';
+    
+    if (currentFlowData) renderTelemetryDAG(currentFlowData);
+    addTelemetryLog('▶️ Iniciando Passo: "' + event.stepId + '" (Index: ' + event.stepIndex + ')', 'step');
+  });
+  
+  source.addEventListener('STEP_COMPLETED', (e) => {
+    const event = JSON.parse(e.data);
+    const idx = event.stepIndex;
+    
+    nodeStatuses[idx] = {
+      classes: ['completed'],
+      text: `CONCLUÍDO (${event.durationMs}ms)`,
+      color: 'var(--secondary)'
+    };
+    edgeStatuses[idx - 1] = 'completed';
+    
+    if (telemetryChart) {
+      telemetryChart.recordStep(event.durationMs);
+    }
+    
+    if (currentFlowData) renderTelemetryDAG(currentFlowData);
+    addTelemetryLog('✔️ Passo Concluído: "' + event.stepId + '" em ' + event.durationMs + 'ms', 'success');
+  });
+  
+  source.addEventListener('STEP_FAILED', (e) => {
+    const event = JSON.parse(e.data);
+    const idx = event.stepIndex;
+    
+    nodeStatuses[idx] = {
+      classes: ['failed'],
+      text: `FALHOU (${event.error || 'Erro'})`,
+      color: 'var(--error)'
+    };
+    edgeStatuses[idx - 1] = 'failed';
+    
+    if (telemetryChart) {
+      telemetryChart.recordStep(event.durationMs || 0);
+    }
+    
+    if (currentFlowData) renderTelemetryDAG(currentFlowData);
+    addTelemetryLog('❌ Passo Falhou: "' + event.stepId + '" | Erro: ' + (event.error || 'Erro desconhecido'), 'error');
+  });
+  
+  source.addEventListener('SELF_HEAL_ATTEMPTED', (e) => {
+    const event = JSON.parse(e.data);
+    let targetIdx = -1;
+    if (currentFlowData) {
+      let tempNodes = [];
+      let idxCount = 0;
+      function walk(items) {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const stepIdx = idxCount++;
+          tempNodes.push({ index: stepIdx, label: item.action || item.type });
+          if (item.steps) walk(item.steps);
+        }
+      }
+      walk(currentFlowData);
+      const matchedNode = tempNodes.find(n => n.label.includes(event.action));
+      if (matchedNode) targetIdx = matchedNode.index;
+    }
+    
+    if (targetIdx !== -1) {
+      if (!nodeStatuses[targetIdx]) {
+        nodeStatuses[targetIdx] = { classes: [], text: '', color: '' };
+      }
+      nodeStatuses[targetIdx].classes.push('self_healed');
+      nodeStatuses[targetIdx].text = '🤖 AI AUTO-HEALED';
+      nodeStatuses[targetIdx].color = '#8b5cf6';
+    }
+    
+    if (currentFlowData) renderTelemetryDAG(currentFlowData);
+    addTelemetryLog('🤖 Auto-Cura da IA: Corrigindo passo "' + event.action + '"...', 'heal');
+    addTelemetryLog('💡 Explicação da IA: "' + event.explanation + '"', 'heal-info');
+  });
+  
+  source.addEventListener('SERVICE_RESOLVED', (e) => {
+    const event = JSON.parse(e.data);
+    const idx = stepIdToIdx[event.stepId];
+    if (idx === undefined) return;
+    
+    if (!nodeStatuses[idx]) {
+      nodeStatuses[idx] = { classes: [], text: '', color: '' };
+    }
+    if (event.isPeer) {
+      nodeStatuses[idx].classes.push('peer');
+    }
+    nodeStatuses[idx].text = `${event.isPeer ? '🔗 ' : ''}${event.serviceName}`;
+    
+    if (currentFlowData) renderTelemetryDAG(currentFlowData);
+    addTelemetryLog('🔌 Serviço Resolvido: "' + event.serviceName + '"' + (event.isPeer ? ' via Peer P2P Gateway' : ''), 'resolve');
+  });
+  
+  source.addEventListener('SAGA_ROLLBACK_STARTED', (e) => {
+    const title = document.querySelector('#live-visualizer-container h3');
+    if (title) {
+      title.innerHTML = `<span class="logo-pulse" style="width: 8px; height: 8px; background-color: var(--warning); box-shadow: 0 0 8px var(--warning);"></span> Rollback Saga em Andamento (Compensação)...`;
+      title.style.color = 'var(--warning)';
+    }
+    for (let key in edgeStatuses) {
+      edgeStatuses[key] = 'rollback';
+    }
+    if (currentFlowData) renderTelemetryDAG(currentFlowData);
+    addTelemetryLog('⚠️ Falha crítica detectada! Iniciando compensação (Saga Rollback)...', 'warn');
+  });
+  
+  source.addEventListener('SAGA_COMPENSATION_STEP', (e) => {
+    const event = JSON.parse(e.data);
+    let targetIdx = -1;
+    if (currentFlowData) {
+      let tempNodes = [];
+      let idxCount = 0;
+      function walk(items) {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const stepIdx = idxCount++;
+          tempNodes.push({ index: stepIdx, label: item.action || item.type });
+          if (item.steps) walk(item.steps);
+        }
+      }
+      walk(currentFlowData);
+      const matchedNode = tempNodes.find(n => n.label.includes(event.capability));
+      if (matchedNode) targetIdx = matchedNode.index;
+    }
+    
+    if (targetIdx !== -1) {
+      if (!nodeStatuses[targetIdx]) {
+        nodeStatuses[targetIdx] = { classes: [], text: '', color: '' };
+      }
+      nodeStatuses[targetIdx].classes.push('compensating');
+      if (event.status === 'RUNNING') {
+        nodeStatuses[targetIdx].classes.push('running');
+      } else if (event.status === 'COMPLETED') {
+        nodeStatuses[targetIdx].classes.push('completed');
+      } else if (event.status === 'FAILED') {
+        nodeStatuses[targetIdx].classes.push('failed');
+      }
+      nodeStatuses[targetIdx].text = `REVERTIDO (${event.status})`;
+      nodeStatuses[targetIdx].color = event.status === 'COMPLETED' ? 'var(--warning)' : (event.status === 'FAILED' ? 'var(--error)' : 'var(--warning)');
+    }
+    
+    if (currentFlowData) renderTelemetryDAG(currentFlowData);
+    addTelemetryLog('🔄 Revertendo Passo: "' + event.capability + '" | Status: ' + event.status, 'warn');
+  });
+
+  source.addEventListener('EXECUTION_FINISHED', () => {
+    setTimeout(() => {
+      const title = document.querySelector('#live-visualizer-container h3');
+      if (title) {
+        title.innerHTML = `<span class="logo-pulse" style="width: 8px; height: 8px; background-color: var(--secondary); box-shadow: 0 0 8px var(--secondary);"></span> Visualizador de Fluxo em Tempo Real (Live Telemetry DAG)`;
+        title.style.color = 'var(--secondary)';
+      }
+    }, 5000);
+    addTelemetryLog('✔️ Orquestração da intenção finalizada.', 'success');
+  });
+}
+
+function initSubTabSwitching() {
+  document.querySelectorAll('[data-sub-tab]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      const targetSubTab = e.currentTarget.getAttribute('data-sub-tab');
+      
+      // Update sub-tab buttons state
+      e.currentTarget.parentElement.querySelectorAll('[data-sub-tab]').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      e.currentTarget.classList.add('active');
+      
+      // Hide all sub-tab contents
+      document.querySelectorAll('.sub-tab-content').forEach(content => {
+        content.style.display = 'none';
+      });
+      
+      // Show target sub-tab content
+      const targetEl = document.getElementById(targetSubTab);
+      if (targetEl) {
+        targetEl.style.display = 'block';
+        targetEl.style.animation = 'fadeInContent 0.6s cubic-bezier(0.16, 1, 0.3, 1)';
+      }
+
+      // Handle specific sub-tab active triggers
+      if (targetSubTab === 'tutorial-builder') {
+        updateBuilderLiveDSL();
+      } else if (targetSubTab === 'tutorial-lab') {
+        updateHackingGutter();
+      }
+    });
+  });
+}
+
+// --- EXPLORER DE CONCEITOS DATA & ENGINE ---
+const conceptLevels = {
+  basico: {
+    title: 'Fluxo de Intenção Padrão',
+    code: `INTENT "meu_primeiro_fluxo" {
+  
+  CONTEXT {
+    amount: 150,
+    user_id: "usr_zk_99"
+  }
+ 
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+ 
+  FLOW {
+    SEQUENCE {
+      EXECUTE PAYMENT
+    }
+  }
+ 
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    tokens: {
+      intent: {
+        icon: '🔑',
+        title: 'Cabeçalho INTENT',
+        subtitle: 'Identificador único do fluxo',
+        body: 'O bloco <code>INTENT</code> é o ponto de entrada da DSL. Ele define o nome pelo qual o fluxo será registrado no banco de dados e catalogado.<br><br><strong>O que evitar:</strong> Usar caracteres especiais ou espaços no nome. Use apenas letras, números e sublinhados (underlines).<br><strong>Exemplo:</strong> <code>INTENT "meu_fluxo" { ... }</code>'
+      },
+      context: {
+        icon: '💼',
+        title: 'Bloco CONTEXT',
+        subtitle: 'Variáveis e Mala de Dados',
+        body: 'O bloco <code>CONTEXT</code> é onde você declara todas as variáveis e informações que as capacidades do fluxo precisarão consumir.<br><br><strong>O que evitar:</strong> Esquecer de colocar vírgulas <code>,</code> para separar cada linha de dados. A última linha do bloco CONTEXT não deve conter vírgula.<br><strong>Exemplo:</strong> <code>amount: 150, user_id: "usr_1"</code>'
+      },
+      require: {
+        icon: '🛠️',
+        title: 'Bloco REQUIRE',
+        subtitle: 'Requisitos de Capacidades',
+        body: 'O bloco <code>REQUIRE</code> avisa ao gateway do INP quais capacidades (capacidades físicas dos microsserviços) devem estar ativas no sistema para que este fluxo possa rodar.<br><br><strong>O que evitar:</strong> Usar aspas no nome da capacidade ou separar itens com vírgulas. Apenas liste as capacidades separando por linha.<br><strong>Exemplo:</strong> <code>EXECUTE PAYMENT</code>'
+      },
+      flow: {
+        icon: '⚙️',
+        title: 'Bloco FLOW',
+        subtitle: 'Lógica e Script de Execução',
+        body: 'O bloco <code>FLOW</code> descreve a coreografia e o algoritmo do fluxo. É aqui que você decide a ordem de execução das capacidades declaradas no REQUIRE.<br><br><strong>O que evitar:</strong> Chamar capacidades que não foram listadas no bloco REQUIRE. Isso gerará um erro de compilação imediato.'
+      },
+      output: {
+        icon: '📥',
+        title: 'Bloco OUTPUT',
+        subtitle: 'Configurações de Resposta',
+        body: 'O bloco <code>OUTPUT</code> define como o resultado do pipeline deve ser formatado antes de retornar para o cliente.<br><br><strong>O que evitar:</strong> Definir formatos não suportados. O padrão é "json".'
+      }
+    }
+  },
+  resiliencia: {
+    title: 'Fluxo Resiliente com Retry/Timeout',
+    code: `INTENT "fluxo_resiliente" {
+  
+  CONTEXT {
+    amount: 250,
+    user_id: "usr_resilient_22"
+  }
+ 
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+ 
+  FLOW {
+    SEQUENCE {
+      TIMEOUT 5s {
+        RETRY 3 {
+          EXECUTE PAYMENT
+        }
+      }
+    }
+  }
+ 
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    tokens: {
+      intent: {
+        icon: '🔑',
+        title: 'Cabeçalho INTENT',
+        subtitle: 'Identificador único do fluxo',
+        body: 'O bloco <code>INTENT</code> define o nome do fluxo resiliente para orquestração.<br><br><strong>O que evitar:</strong> Letras minúsculas em termos protegidos.'
+      },
+      context: {
+        icon: '💼',
+        title: 'Bloco CONTEXT',
+        subtitle: 'Variáveis e Mala de Dados',
+        body: 'Declaração de dados que serão consumidos pelo fluxo. Números não precisam de aspas.'
+      },
+      require: {
+        icon: '🛠️',
+        title: 'Bloco REQUIRE',
+        subtitle: 'Requisitos de Capacidades',
+        body: 'Lista capacidades necessárias ativas. Sem vírgulas.'
+      },
+      flow: {
+        icon: '⚙️',
+        title: 'Bloco FLOW',
+        subtitle: 'Lógica e Script de Execução',
+        body: 'Coração da lógica orquestrada. Executa passos lógicos na sequência determinada.'
+      },
+      timeout: {
+        icon: '⏱️',
+        title: 'Instrução TIMEOUT',
+        subtitle: 'Garantia de Tempo de Resposta',
+        body: 'A instrução <code>TIMEOUT 5s { ... }</code> limita o tempo máximo que o bloco interno pode levar para executar. Se o microsserviço demorar mais de 5 segundos, a execução é interrompida com erro, evitando travamento de conexões.<br><br><strong>O que evitar:</strong> Colocar timeouts muito curtos (como <code>1s</code>) em serviços integrados externos lentos.'
+      },
+      retry: {
+        icon: '🔁',
+        title: 'Instrução RETRY',
+        subtitle: 'Auto-Recuperação de Falhas Temporárias',
+        body: 'A instrução <code>RETRY 3 { ... }</code> define que, em caso de instabilidades na rede ou erro do microsserviço, o orquestrador fará até 3 tentativas automáticas antes de desistir e apontar erro físico.'
+      },
+      output: {
+        icon: '📥',
+        title: 'Bloco OUTPUT',
+        subtitle: 'Configurações de Resposta',
+        body: 'O formato final dos dados retornados para o cliente (ex: "json").'
+      }
+    }
+  },
+  avancado: {
+    title: 'ZK-Intents Criptográficas',
+    code: `INTENT "transacao_confidencial" {
+  
+  CONTEXT {
+    amount_commitment: "74895084a3aaf8f8a047c1...",
+    amount_proof: { "value": 150, "salt": "confidentialSalt" }
+  }
+ 
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+ 
+  FLOW {
+    CONFIDENTIAL_SCOPE {
+      VERIFY amount >= 100
+      EXECUTE PAYMENT
+    }
+  }
+ 
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    tokens: {
+      intent: {
+        icon: '🔑',
+        title: 'Cabeçalho INTENT',
+        subtitle: 'Identificador único do fluxo',
+        body: 'Nome do fluxo para validações criptográficas ZK.'
+      },
+      context: {
+        icon: '💼',
+        title: 'Bloco CONTEXT',
+        subtitle: 'Variáveis e Mala de Dados',
+        body: 'Armazena o Commitment Hash criptografado (amount_commitment) e as provas de valor (amount_proof) para alimentar o provador matemático.'
+      },
+      require: {
+        icon: '🛠️',
+        title: 'Bloco REQUIRE',
+        subtitle: 'Requisitos de Capacidades',
+        body: 'Solicita a capacidade do microsserviço de pagamento seguro cadastrado.'
+      },
+      flow: {
+        icon: '⚙️',
+        title: 'Bloco FLOW',
+        subtitle: 'Lógica e Script de Execução',
+        body: 'Direciona a validação e orquestração do fluxo.'
+      },
+      confidential_scope: {
+        icon: '🔒',
+        title: 'Confidential Scope (Enclave)',
+        subtitle: 'Execução Criptográfica Isolada',
+        body: 'O bloco <code>CONFIDENTIAL_SCOPE { ... }</code> instrui o motor INP a descompactar dados sensíveis do <code>CONTEXT</code> apenas em memória segura (enclave virtual). Nenhuma variável interna é logada ou exposta aos microsserviços comuns.<br><br><strong>Utilidade:</strong> Essencial para proteger dados privados de usuários durante orquestrações.'
+      },
+      verify: {
+        icon: '🛡️',
+        title: 'Validação Criptográfica VERIFY',
+        subtitle: 'Prova de Conhecimento Zero (ZK)',
+        body: 'A instrução <code>VERIFY amount >= 100</code> executa a checagem lógica de condições dentro do Confidential Scope usando hashes SHA-256 e provando matematicamente que o valor atende aos critérios sem expor o montante original.<br><br><strong>O que evitar:</strong> Usar operadores lógicos inválidos como <code>=></code>.'
+      },
+      output: {
+        icon: '📥',
+        title: 'Bloco OUTPUT',
+        subtitle: 'Configurações de Resposta',
+        body: 'Definição de retorno seguro em formato JSON.'
+      }
+    }
+  }
+};
+
+function renderConceptCode(levelKey) {
+  const level = conceptLevels[levelKey];
+  if (!level) return;
+  
+  const titleEl = document.getElementById('concept-code-title');
+  if (titleEl) titleEl.innerText = level.title;
+  
+  let codeHtml = level.code;
+  
+  if (levelKey === 'basico') {
+    codeHtml = codeHtml
+      .replace(/(INTENT\s+"meu_primeiro_fluxo")/g, '<span class="explorer-token" data-token="intent">$1</span>')
+      .replace(/(CONTEXT\s*\{[\s\S]*?\})/g, '<span class="explorer-token" data-token="context">$1</span>')
+      .replace(/(REQUIRE\s*\{[\s\S]*?\})/g, '<span class="explorer-token" data-token="require">$1</span>')
+      .replace(/(FLOW\s*\{[\s\S]*?\n\s*\})/g, '<span class="explorer-token" data-token="flow">$1</span>')
+      .replace(/(OUTPUT\s*\{[\s\S]*?\})/g, '<span class="explorer-token" data-token="output">$1</span>');
+  } else if (levelKey === 'resiliencia') {
+    codeHtml = codeHtml
+      .replace(/(INTENT\s+"fluxo_resiliente")/g, '<span class="explorer-token" data-token="intent">$1</span>')
+      .replace(/(CONTEXT\s*\{[\s\S]*?\})/g, '<span class="explorer-token" data-token="context">$1</span>')
+      .replace(/(REQUIRE\s*\{[\s\S]*?\})/g, '<span class="explorer-token" data-token="require">$1</span>')
+      .replace(/(FLOW\s*\{[\s\S]*?\n\s*\})/g, '<span class="explorer-token" data-token="flow">$1</span>')
+      .replace(/(TIMEOUT\s+5s\s*\{[\s\S]*?\n\s*\}\s*\n\s*\})/g, '<span class="explorer-token" data-token="timeout">$1</span>')
+      .replace(/(RETRY\s+3\s*\{[\s\S]*?\n\s*\}\s*\})/g, '<span class="explorer-token" data-token="retry">$1</span>')
+      .replace(/(OUTPUT\s*\{[\s\S]*?\})/g, '<span class="explorer-token" data-token="output">$1</span>');
+  } else if (levelKey === 'avancado') {
+    codeHtml = codeHtml
+      .replace(/(INTENT\s+"transacao_confidencial")/g, '<span class="explorer-token" data-token="intent">$1</span>')
+      .replace(/(CONTEXT\s*\{[\s\S]*?\})/g, '<span class="explorer-token" data-token="context">$1</span>')
+      .replace(/(REQUIRE\s*\{[\s\S]*?\})/g, '<span class="explorer-token" data-token="require">$1</span>')
+      .replace(/(FLOW\s*\{[\s\S]*?\n\s*\})/g, '<span class="explorer-token" data-token="flow">$1</span>')
+      .replace(/(CONFIDENTIAL_SCOPE\s*\{[\s\S]*?\n\s*\})/g, '<span class="explorer-token" data-token="confidential_scope">$1</span>')
+      .replace(/(VERIFY\s+amount\s+>=\s+100)/g, '<span class="explorer-token" data-token="verify">$1</span>')
+      .replace(/(OUTPUT\s*\{[\s\S]*?\})/g, '<span class="explorer-token" data-token="output">$1</span>');
+  }
+  
+  // Syntax coloring
+  codeHtml = codeHtml
+    .replace(/(INTENT|CONTEXT|REQUIRE|FLOW|SEQUENCE|PARALLEL|OUTPUT|FORMAT|TIMEOUT|RETRY|CONFIDENTIAL_SCOPE|VERIFY)/g, '<span style="color: var(--primary); font-weight: bold;">$1</span>')
+    .replace(/("[^"]*")/g, '<span style="color: var(--secondary);">$1</span>')
+    .replace(/(\b\d+(\.\d+)?\b)/g, '<span style="color: var(--warning);">$1</span>');
+
+  const displayEl = document.getElementById('concept-code-display');
+  if (displayEl) {
+    displayEl.innerHTML = codeHtml;
+    
+    // Attach listeners
+    displayEl.querySelectorAll('.explorer-token').forEach(tok => {
+      tok.addEventListener('mouseenter', (e) => {
+        highlightConceptToken(levelKey, e.currentTarget.getAttribute('data-token'));
+      });
+      tok.addEventListener('click', (e) => {
+        highlightConceptToken(levelKey, e.currentTarget.getAttribute('data-token'), true);
+      });
+    });
+  }
+}
+
+function highlightConceptToken(levelKey, tokenKey, isClick = false) {
+  const level = conceptLevels[levelKey];
+  if (!level) return;
+  const tokenData = level.tokens[tokenKey];
+  if (!tokenData) return;
+  
+  const displayEl = document.getElementById('concept-code-display');
+  if (displayEl) {
+    displayEl.querySelectorAll('.explorer-token').forEach(tok => {
+      tok.classList.remove('active-token');
+    });
+    const activeTok = displayEl.querySelector(`.explorer-token[data-token="${tokenKey}"]`);
+    if (activeTok) activeTok.classList.add('active-token');
+  }
+  
+  const iconEl = document.getElementById('concept-detail-icon');
+  const titleEl = document.getElementById('concept-detail-title');
+  const subtitleEl = document.getElementById('concept-detail-subtitle');
+  const bodyEl = document.getElementById('concept-detail-body');
+  
+  if (iconEl) iconEl.innerText = tokenData.icon;
+  if (titleEl) titleEl.innerText = tokenData.title;
+  if (subtitleEl) subtitleEl.innerText = tokenData.subtitle;
+  if (bodyEl) {
+    bodyEl.innerHTML = `<p style="color: var(--text-muted); font-size: 13.5px; line-height: 1.6;">${tokenData.body}</p>`;
+  }
+}
+
+function initConceptExplorer() {
+  document.querySelectorAll('[data-concept-level]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      document.querySelectorAll('[data-concept-level]').forEach(b => b.classList.remove('active'));
+      e.currentTarget.classList.add('active');
+      const level = e.currentTarget.getAttribute('data-concept-level');
+      renderConceptCode(level);
+      highlightConceptToken(level, 'intent');
+    });
+  });
+  
+  renderConceptCode('basico');
+  highlightConceptToken('basico', 'intent');
+  
+  const btnLoad = document.getElementById('btn-load-concept-to-play');
+  if (btnLoad) {
+    btnLoad.addEventListener('click', () => {
+      const activeBtn = document.querySelector('[data-concept-level].active');
+      const levelKey = activeBtn ? activeBtn.getAttribute('data-concept-level') : 'basico';
+      const level = conceptLevels[levelKey];
+      if (level) {
+        const playgroundCode = document.getElementById('playground-code');
+        const playgroundType = document.getElementById('playground-type');
+        if (playgroundCode) {
+          playgroundCode.value = level.code;
+          if (playgroundType) {
+            playgroundType.value = 'dsl';
+            const indicator = document.getElementById('editor-lang-indicator');
+            if (indicator) indicator.innerText = 'INP DSL';
+          }
+          updateLineNumbers();
+          updateFlowPreview();
+          
+          switchTab(null, 'tab-playground');
+          const targetSection = document.getElementById('tab-playground');
+          if (targetSection) {
+            targetSection.scrollIntoView({ behavior: 'smooth' });
+          }
+        }
+      }
+    });
+  }
+}
+
+// --- DYNAMIC BLUEPRINT BUILDER ENGINE ---
+function updateBuilderLiveDSL() {
+  const nameInput = document.getElementById('builder-intent-name');
+  const amountInput = document.getElementById('builder-amount');
+  const userIdInput = document.getElementById('builder-user-id');
+  const tokenInput = document.getElementById('builder-token');
+  const flowType = document.getElementById('builder-flow-type');
+  const flowAction = document.getElementById('builder-flow-action');
+  
+  const zkToggle = document.getElementById('builder-zk-toggle');
+  const resilienceToggle = document.getElementById('builder-resilience-toggle');
+  const verifyToggle = document.getElementById('builder-verify-toggle');
+  const fallbackToggle = document.getElementById('builder-fallback-toggle');
+  
+  // Toggle displays
+  const resOptions = document.getElementById('builder-resilience-options');
+  if (resOptions) resOptions.style.display = (resilienceToggle && resilienceToggle.checked) ? 'grid' : 'none';
+  const verOptions = document.getElementById('builder-verify-options');
+  if (verOptions) verOptions.style.display = (verifyToggle && verifyToggle.checked) ? 'block' : 'none';
+  const falOptions = document.getElementById('builder-fallback-options');
+  if (falOptions) falOptions.style.display = (fallbackToggle && fallbackToggle.checked) ? 'block' : 'none';
+
+  const name = nameInput ? nameInput.value.trim().replace(/[^a-zA-Z0-9_\-]/g, '') || 'reserva_voo_vip' : 'reserva_voo_vip';
+  const amount = amountInput ? Number(amountInput.value) || 350 : 350;
+  const userId = userIdInput ? userIdInput.value.trim().replace(/"/g, '') || 'usr_gold_77' : 'usr_gold_77';
+  const token = tokenInput ? tokenInput.value.trim().replace(/"/g, '') || 'tok_card_platinum' : 'tok_card_platinum';
+
+  let contextBody = '';
+  if (zkToggle && zkToggle.checked) {
+    contextBody = `    amount_commitment: "74895084a3aaf8f8a047c1d39ced874075948d72733b02c7c126c243b6b5102f",\n    amount_proof: { "value": ${amount}, "salt": "confidentialSalt" }`;
+  } else {
+    contextBody = `    amount: ${amount},\n    user_id: "${userId}",\n    card_token: "${token}"`;
+  }
+  
+  let contextStr = `  CONTEXT {\n${contextBody}\n  }`;
+
+  let verb = 'EXECUTE';
+  let target = 'PAYMENT';
+  if (flowAction && flowAction.value.includes('REWARD')) {
+    target = 'REWARD';
+  }
+  let requireStr = `  REQUIRE {\n    ${verb} ${target}\n  }`;
+
+  const type = flowType ? flowType.value : 'SEQUENCE';
+  const action = flowAction ? flowAction.value : 'EXECUTE PAYMENT';
+  
+  let actionCore = `      ${action}`;
+  if (fallbackToggle && fallbackToggle.checked) {
+    const fallbackVal = document.getElementById('builder-fallback-val');
+    const fallbackStr = fallbackVal ? fallbackVal.value : 'FALLBACK "reverse_payment"';
+    actionCore += `\n      ${fallbackStr}`;
+  }
+
+  let flowBody = '';
+  if (resilienceToggle && resilienceToggle.checked) {
+    const timeoutVal = document.getElementById('builder-timeout-val');
+    const timeout = timeoutVal ? Number(timeoutVal.value) || 5 : 5;
+    const retryVal = document.getElementById('builder-retry-val');
+    const retry = retryVal ? Number(retryVal.value) || 3 : 3;
+    
+    flowBody = `    ${type} {\n      TIMEOUT ${timeout}s {\n        RETRY ${retry} {\n    ${actionCore.trim()}\n        }\n      }\n    }`;
+  } else {
+    flowBody = `    ${type} {\n${actionCore}\n    }`;
+  }
+
+  if (zkToggle && zkToggle.checked) {
+    let scopeBody = '';
+    if (verifyToggle && verifyToggle.checked) {
+      const verifyVal = document.getElementById('builder-verify-val');
+      const verifyStr = verifyVal ? verifyVal.value : 'VERIFY amount >= 100';
+      scopeBody = `      ${verifyStr}\n  ${flowBody.replace(/\n/g, '\n  ')}`;
+    } else {
+      scopeBody = `  ${flowBody.replace(/\n/g, '\n  ')}`;
+    }
+    flowBody = `    CONFIDENTIAL_SCOPE {\n${scopeBody}\n    }`;
+  } else {
+    if (verifyToggle && verifyToggle.checked) {
+      const verifyVal = document.getElementById('builder-verify-val');
+      const verifyStr = verifyVal ? verifyVal.value : 'VERIFY amount >= 100';
+      flowBody = `    ${type} {\n      ${verifyStr}\n  ${actionCore}\n    }`;
+    }
+  }
+
+  let flowStr = `  FLOW {\n${flowBody}\n  }`;
+
+  const dsl = `INTENT "${name}" {
+${contextStr}
+ 
+${requireStr}
+ 
+${flowStr}
+ 
+  OUTPUT {
+    FORMAT "json"
+  }
+}`;
+
+  const previewEl = document.getElementById('builder-live-dsl-output');
+  if (previewEl) {
+    let html = dsl
+      .replace(/(INTENT|CONTEXT|REQUIRE|FLOW|SEQUENCE|PARALLEL|OUTPUT|FORMAT|TIMEOUT|RETRY|CONFIDENTIAL_SCOPE|VERIFY|FALLBACK)/g, '<span style="color: var(--primary); font-weight: bold;">$1</span>')
+      .replace(/("[^"]*")/g, '<span style="color: var(--secondary);">$1</span>')
+      .replace(/(\b\d+(\.\d+)?\b)/g, '<span style="color: var(--warning);">$1</span>')
+      .replace(/(\/\/.*)/g, '<span style="color: var(--text-muted);">$1</span>');
+    previewEl.innerHTML = html;
+  }
+  
+  const sendBtn = document.getElementById('btn-send-builder-to-play');
+  if (sendBtn) {
+    sendBtn.setAttribute('data-dsl-code', dsl);
+  }
+
+  updateBuilderBlueprint({
+    name,
+    amount,
+    userId,
+    token,
+    type,
+    action,
+    zkActive: zkToggle && zkToggle.checked,
+    resilienceActive: resilienceToggle && resilienceToggle.checked,
+    verifyActive: verifyToggle && verifyToggle.checked,
+    fallbackActive: fallbackToggle && fallbackToggle.checked
+  });
+}
+
+function updateBuilderBlueprint(opts) {
+  const container = document.getElementById('builder-blueprint-diagram');
+  if (!container) return;
+  
+  container.innerHTML = '';
+  
+  // Start
+  const nodeStart = document.createElement('div');
+  nodeStart.className = 'blueprint-node node-start';
+  nodeStart.innerHTML = '🏁 INÍCIO';
+  container.appendChild(nodeStart);
+  
+  container.appendChild(createBlueprintArrow());
+  
+  // Context
+  const nodeContext = document.createElement('div');
+  if (opts.zkActive) {
+    nodeContext.className = 'blueprint-node node-zk';
+    nodeContext.innerHTML = '🔒 ZK-ENCLAVE (Private)';
+  } else {
+    nodeContext.className = 'blueprint-node node-context';
+    nodeContext.innerHTML = `💼 CONTEXT (${opts.amount})`;
+  }
+  container.appendChild(nodeContext);
+  
+  container.appendChild(createBlueprintArrow());
+  
+  // Verify
+  if (opts.verifyActive) {
+    const nodeVerify = document.createElement('div');
+    nodeVerify.className = 'blueprint-node node-verify';
+    const verifyVal = document.getElementById('builder-verify-val');
+    nodeVerify.innerHTML = `🛡️ ${verifyVal ? verifyVal.value : 'VERIFY'}`;
+    container.appendChild(nodeVerify);
+    container.appendChild(createBlueprintArrow());
+  }
+  
+  // Action Node
+  const nodeAction = document.createElement('div');
+  nodeAction.className = 'blueprint-node node-action';
+  
+  let actText = `⚙️ ${opts.action}`;
+  if (opts.resilienceActive) {
+    const timeoutVal = document.getElementById('builder-timeout-val');
+    const retryVal = document.getElementById('builder-retry-val');
+    actText += `<br><span style="font-size:9px;color:var(--text-muted);">⏱️ ${timeoutVal ? timeoutVal.value : 5}s | 🔁 ${retryVal ? retryVal.value : 3}x</span>`;
+  }
+  nodeAction.innerHTML = actText;
+  
+  if (opts.fallbackActive) {
+    const row = document.createElement('div');
+    row.className = 'blueprint-parallel-row';
+    row.appendChild(nodeAction);
+    
+    // Fallback Node
+    const nodeFallback = document.createElement('div');
+    nodeFallback.className = 'blueprint-node node-fallback';
+    const fallbackVal = document.getElementById('builder-fallback-val');
+    nodeFallback.innerHTML = `🚨 REVERTER:<br>${fallbackVal ? fallbackVal.value.replace(/FALLBACK\s+/i, '') : '"reverse"'}`;
+    
+    row.appendChild(nodeFallback);
+    container.appendChild(row);
+  } else {
+    container.appendChild(nodeAction);
+  }
+  
+  container.appendChild(createBlueprintArrow());
+  
+  // Output
+  const nodeOutput = document.createElement('div');
+  nodeOutput.className = 'blueprint-node node-output';
+  nodeOutput.innerHTML = '📥 OUTPUT (JSON)';
+  container.appendChild(nodeOutput);
+}
+
+function createBlueprintArrow() {
+  const arrow = document.createElement('div');
+  arrow.className = 'blueprint-arrow';
+  arrow.innerHTML = '↓';
+  return arrow;
+}
+
+// --- GAMIFIED HACKING ARENA DATA & SYSTEM ---
+const hackingChallenges = [
+  {
+    id: 1,
+    title: 'Desafio 1: A vírgula perdida',
+    difficulty: 'Iniciante',
+    desc: 'O bloco <code>CONTEXT</code> possui variáveis declaradas de forma linear, mas o compilador está acusando erro. Localize a variável que precisa de um separador de dados e resolva a pendência para compilar.',
+    code: `INTENT "comprar_passagem" {
+  CONTEXT {
+    preco: 300
+    passageiro: "Alice"
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      EXECUTE PAYMENT
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    hint: 'Adicione uma vírgula `,` no final do valor numérico `preco: 300` para separá-lo do próximo dado no bloco CONTEXT.',
+    fix: `INTENT "comprar_passagem" {
+  CONTEXT {
+    preco: 300,
+    passageiro: "Alice"
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      EXECUTE PAYMENT
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    validate: (code) => {
+      return /preco:\s*300\s*,/.test(code);
+    }
+  },
+  {
+    id: 2,
+    title: 'Desafio 2: O fecho quebrado',
+    difficulty: 'Iniciante',
+    desc: 'A orquestração não pode começar se as caixas estruturais (chaves `{}`) estiverem desalinhadas. Este arquivo possui chaves abertas que não estão fechadas corretamente. Resolva a inconsistência estrutural.',
+    code: `INTENT "resgate_recompensa" {
+  CONTEXT {
+    pontos: 50
+  }
+  REQUIRE {
+    EXECUTE REWARD
+  }
+  FLOW {
+    SEQUENCE {
+      EXECUTE REWARD
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }`,
+    hint: 'Falta uma chave de fechamento `}` no final do arquivo correspondente à abertura do bloco `INTENT` na linha 1.',
+    fix: `INTENT "resgate_recompensa" {
+  CONTEXT {
+    pontos: 50
+  }
+  REQUIRE {
+    EXECUTE REWARD
+  }
+  FLOW {
+    SEQUENCE {
+      EXECUTE REWARD
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    validate: (code) => {
+      const opens = (code.match(/\{/g) || []).length;
+      const closes = (code.match(/\}/g) || []).length;
+      return opens === closes && opens >= 5;
+    }
+  },
+  {
+    id: 3,
+    title: 'Desafio 3: A revolta da caixa baixa',
+    difficulty: 'Intermediário',
+    desc: 'O compilador INP DSL é rígido em relação a palavras reservadas: comandos devem ser escritos em CAIXA ALTA (letras maiúsculas). Localize as palavras reservadas em minúscula e converta-as.',
+    code: `intent "pagamento_rapido" {
+  CONTEXT {
+    val: 80
+  }
+  require {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    sequence {
+      EXECUTE PAYMENT
+    }
+  }
+  OUTPUT {
+    format "json"
+  }
+}`,
+    hint: 'Converta os comandos `intent`, `require`, `sequence` e `format` para suas versões em caixa alta: `INTENT`, `REQUIRE`, `SEQUENCE` e `FORMAT`.',
+    fix: `INTENT "pagamento_rapido" {
+  CONTEXT {
+    val: 80
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      EXECUTE PAYMENT
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    validate: (code) => {
+      const lowerWords = ['intent', 'require', 'sequence', 'format'];
+      for (const w of lowerWords) {
+        if (new RegExp('\\b' + w + '\\b').test(code)) return false;
+      }
+      return true;
+    }
+  },
+  {
+    id: 4,
+    title: 'Desafio 4: O valor desprotegido',
+    difficulty: 'Intermediário',
+    desc: 'Variáveis contextuais do tipo texto (strings) precisam estar encapsuladas em aspas duplas, ao contrário de números e booleanos. Encontre o valor desprotegido e proteja-o.',
+    code: `INTENT "envio_notificacao" {
+  CONTEXT {
+    usuario: Joao,
+    canal: "email"
+  }
+  REQUIRE {
+    SEND NOTIFICATION
+  }
+  FLOW {
+    SEQUENCE {
+      SEND NOTIFICATION
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    hint: 'O valor `Joao` é um texto sem aspas. Mude a linha 3 para `usuario: "Joao",`.',
+    fix: `INTENT "envio_notificacao" {
+  CONTEXT {
+    usuario: "Joao",
+    canal: "email"
+  }
+  REQUIRE {
+    SEND NOTIFICATION
+  }
+  FLOW {
+    SEQUENCE {
+      SEND NOTIFICATION
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    validate: (code) => {
+      return /usuario:\s*"Joao"\s*,/.test(code);
+    }
+  },
+  {
+    id: 5,
+    title: 'Desafio 5: O enigma ZK-Intent',
+    difficulty: 'Avançado',
+    desc: 'Em orquestrações de privacidade, o Confidential Scope aceita checagens de validação matemática de ZK. Porém, um operador lógico incorreto foi inserido na condicional. Descubra qual é o caractere inválido e corrija.',
+    code: `INTENT "zk_pagamento" {
+  CONTEXT {
+    hash: "zk_77a9",
+    secreto: { "amount": 120, "salt": "secret" }
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    CONFIDENTIAL_SCOPE {
+      VERIFY amount => 100
+      EXECUTE PAYMENT
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    hint: 'O operador de verificação matemática maior-ou-igual é escrito como `>=` e não `=>`. Substitua `=>` por `>=`.',
+    fix: `INTENT "zk_pagamento" {
+  CONTEXT {
+    hash: "zk_77a9",
+    secreto: { "amount": 120, "salt": "secret" }
+  }
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    CONFIDENTIAL_SCOPE {
+      VERIFY amount >= 100
+      EXECUTE PAYMENT
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`,
+    validate: (code) => {
+      return /VERIFY\s+amount\s+>=\s*100/.test(code);
+    }
+  }
+];
+
+let currentChallengeId = 1;
+let completedChallenges = [];
+let hackerXP = 0;
+
+function initSyntaxLabChallenges() {
+  const savedXP = localStorage.getItem('inp_hacker_xp');
+  const savedCompleted = localStorage.getItem('inp_completed_challenges');
+  if (savedXP) hackerXP = parseInt(savedXP, 10);
+  if (savedCompleted) {
+    try {
+      completedChallenges = JSON.parse(savedCompleted);
+    } catch(e) {
+      completedChallenges = [];
+    }
+  }
+  
+  updateHackingScoreboard();
+  renderHackingSidebar();
+  loadHackingChallenge(currentChallengeId);
+  
+  const btnCompile = document.getElementById('btn-hacking-compile');
+  if (btnCompile) {
+    btnCompile.addEventListener('click', runHackingCompile);
+  }
+  
+  const btnHint = document.getElementById('btn-hacking-hint');
+  if (btnHint) {
+    btnHint.addEventListener('click', () => {
+      const challenge = hackingChallenges.find(c => c.id === currentChallengeId);
+      if (challenge) {
+        printHackingLog(`DICA: ${challenge.hint}`, 'warning');
+      }
+    });
+  }
+  
+  const btnAutofix = document.getElementById('btn-hacking-autofix');
+  if (btnAutofix) {
+    btnAutofix.addEventListener('click', () => {
+      const challenge = hackingChallenges.find(c => c.id === currentChallengeId);
+      if (challenge) {
+        const textarea = document.getElementById('hacking-editor-textarea');
+        if (textarea) {
+          textarea.value = challenge.fix;
+          updateHackingGutter();
+          printHackingLog(`Auto-resolvido! Execute "Compilar e Testar" para confirmar.`, 'info');
+        }
+      }
+    });
+  }
+
+  const textarea = document.getElementById('hacking-editor-textarea');
+  const gutter = document.getElementById('hacking-line-gutter');
+  if (textarea) {
+    textarea.addEventListener('input', () => {
+      updateHackingGutter();
+    });
+    textarea.addEventListener('scroll', () => {
+      if (gutter) gutter.scrollTop = textarea.scrollTop;
+    });
+  }
+}
+
+function updateHackingGutter() {
+  const textarea = document.getElementById('hacking-editor-textarea');
+  const gutter = document.getElementById('hacking-line-gutter');
+  if (!textarea || !gutter) return;
+  
+  const linesCount = textarea.value.split('\n').length;
+  let html = '';
+  for (let i = 1; i <= linesCount; i++) {
+    html += `<div style="height:20px; text-align:right; padding-right:8px; color:rgba(255,255,255,0.15); font-family:monospace; font-size:11px;">${i}</div>`;
+  }
+  gutter.innerHTML = html;
+}
+
+function updateHackingScoreboard() {
+  const xpDisplay = document.getElementById('hacking-xp-display');
+  const progressPercent = document.getElementById('hacking-progress-percent');
+  const progressBar = document.getElementById('hacking-progress-bar');
+  const rankTitle = document.getElementById('hacking-rank-title');
+  const badgeIcon = document.getElementById('hacking-badge-icon');
+  
+  if (xpDisplay) xpDisplay.innerText = `${hackerXP} / 500 XP`;
+  
+  const totalChallenges = hackingChallenges.length;
+  const completedCount = completedChallenges.length;
+  const percent = Math.round((completedCount / totalChallenges) * 100);
+  if (progressPercent) progressPercent.innerText = `${percent}%`;
+  if (progressBar) progressBar.style.width = `${percent}%`;
+  
+  let rank = 'Recruta da Rede';
+  let badge = '🎖️';
+  if (hackerXP >= 500) {
+    rank = 'Mestre de Orquestração';
+    badge = '👑';
+  } else if (hackerXP >= 350) {
+    rank = 'Especialista em Compiladores';
+    badge = '🔮';
+  } else if (hackerXP >= 150) {
+    rank = 'Sintatista de DSL';
+    badge = '⚡';
+  }
+  
+  if (rankTitle) rankTitle.innerText = rank;
+  if (badgeIcon) badgeIcon.innerText = badge;
+}
+
+function renderHackingSidebar() {
+  const listContainer = document.getElementById('hacking-challenges-list');
+  if (!listContainer) return;
+  
+  listContainer.innerHTML = '';
+  
+  hackingChallenges.forEach(challenge => {
+    const btn = document.createElement('button');
+    const isCompleted = completedChallenges.includes(challenge.id);
+    const isUnlocked = challenge.id === 1 || completedChallenges.includes(challenge.id - 1) || isCompleted;
+    
+    btn.className = 'btn-challenge';
+    if (challenge.id === currentChallengeId) btn.classList.add('active');
+    if (isCompleted) btn.classList.add('completed');
+    
+    let suffix = '';
+    if (isCompleted) {
+      suffix = '<span style="color:#10b981;font-weight:bold;">✔</span>';
+    } else if (!isUnlocked) {
+      btn.classList.add('locked');
+      suffix = '<span>🔒</span>';
+    } else {
+      suffix = '<span style="color:var(--secondary); font-size:10px;">•</span>';
+    }
+    
+    btn.innerHTML = `<span style="font-size:12.5px;">${challenge.title}</span> ${suffix}`;
+    
+    if (isUnlocked) {
+      btn.addEventListener('click', () => {
+        currentChallengeId = challenge.id;
+        renderHackingSidebar();
+        loadHackingChallenge(challenge.id);
+      });
+    }
+    
+    listContainer.appendChild(btn);
+  });
+}
+
+function loadHackingChallenge(id) {
+  const challenge = hackingChallenges.find(c => c.id === id);
+  if (!challenge) return;
+  
+  const titleEl = document.getElementById('hacking-challenge-title');
+  const descEl = document.getElementById('hacking-challenge-desc');
+  const difficultyEl = document.getElementById('hacking-challenge-difficulty');
+  const textarea = document.getElementById('hacking-editor-textarea');
+  
+  if (titleEl) titleEl.innerText = challenge.title;
+  if (descEl) descEl.innerHTML = challenge.desc;
+  if (difficultyEl) {
+    difficultyEl.innerText = challenge.difficulty;
+    difficultyEl.className = 'badge';
+    if (challenge.difficulty === 'Iniciante') {
+      difficultyEl.style.background = 'rgba(0, 245, 255, 0.05)';
+      difficultyEl.style.color = 'var(--secondary)';
+      difficultyEl.style.borderColor = 'rgba(0, 245, 255, 0.15)';
+    } else if (challenge.difficulty === 'Intermediário') {
+      difficultyEl.style.background = 'rgba(255, 183, 3, 0.05)';
+      difficultyEl.style.color = 'var(--warning)';
+      difficultyEl.style.borderColor = 'rgba(255, 183, 3, 0.15)';
+    } else {
+      difficultyEl.style.background = 'rgba(162, 89, 255, 0.05)';
+      difficultyEl.style.color = 'var(--primary-hover)';
+      difficultyEl.style.borderColor = 'rgba(162, 89, 255, 0.15)';
+    }
+  }
+  
+  if (textarea) {
+    textarea.value = challenge.code;
+    updateHackingGutter();
+  }
+  
+  clearHackingConsole();
+  printHackingLog(`Carregado ${challenge.title}. Modifique o editor para testar.`);
+}
+
+function printHackingLog(message, type = 'info') {
+  const consoleEl = document.getElementById('hacking-terminal-console');
+  if (!consoleEl) return;
+  
+  let color = '#a5b4fc';
+  let prefix = 'guest@inp-compiler:~$ ';
+  if (type === 'success') {
+    color = '#10b981';
+    prefix = '[COMPILE SUCCESS] ';
+  } else if (type === 'error') {
+    color = 'var(--error)';
+    prefix = '[COMPILE ERROR] ';
+  } else if (type === 'warning') {
+    color = 'var(--warning)';
+    prefix = '[HINT] ';
+  }
+  
+  const time = new Date().toLocaleTimeString();
+  const line = `<div style="color: ${color}; margin-bottom: 4px;">[${time}] ${prefix}${message}</div>`;
+  
+  consoleEl.innerHTML += line;
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+function clearHackingConsole() {
+  const consoleEl = document.getElementById('hacking-terminal-console');
+  if (consoleEl) {
+    consoleEl.innerHTML = '';
+  }
+}
+
+function runHackingCompile() {
+  const challenge = hackingChallenges.find(c => c.id === currentChallengeId);
+  if (!challenge) return;
+  
+  const textarea = document.getElementById('hacking-editor-textarea');
+  if (!textarea) return;
+  const code = textarea.value;
+  
+  const lintResult = runSandboxLinter(code);
+  
+  if (!lintResult.success) {
+    printHackingLog(`Linha ${lintResult.lineNum}: ${lintResult.message}`, 'error');
+    if (lintResult.fixTip) {
+      printHackingLog(lintResult.fixTip, 'warning');
+    }
+    highlightSandboxErrorLine(lintResult.lineNum);
+    return;
+  }
+  
+  const solutionMatches = challenge.validate(code);
+  
+  if (!solutionMatches) {
+    printHackingLog(`Sintaxe compilada com sucesso, mas o comportamento lógico está incorreto para este desafio.`, 'error');
+    printHackingLog(`Dica: ${challenge.hint}`, 'warning');
+    return;
+  }
+  
+  printHackingLog(`Sintaxe Compilada com Sucesso!`, 'success');
+  
+  if (!completedChallenges.includes(challenge.id)) {
+    completedChallenges.push(challenge.id);
+    hackerXP += 100;
+    
+    localStorage.setItem('inp_hacker_xp', hackerXP);
+    localStorage.setItem('inp_completed_challenges', JSON.stringify(completedChallenges));
+    
+    updateHackingScoreboard();
+    printHackingLog(`Parabéns! +100 XP obtidos.`, 'success');
+  }
+  
+  setTimeout(() => {
+    renderHackingSidebar();
+    if (currentChallengeId < hackingChallenges.length) {
+      currentChallengeId++;
+      renderHackingSidebar();
+      loadHackingChallenge(currentChallengeId);
+    } else {
+      printHackingLog(`PARABÉNS! Todos os 5 desafios foram vencidos com sucesso! Ranks Masterclass liberados.`, 'success');
+    }
+  }, 2000);
+}
+
+function runSandboxLinter(code) {
+  if (!code || !code.trim()) {
+    return { success: false, lineNum: 1, message: 'Arquivo vazio', fixTip: 'Escreva uma DSL válida.' };
+  }
+  
+  let openBraces = 0;
+  let closeBraces = 0;
+  const lines = code.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    openBraces += (line.match(/\{/g) || []).length;
+    closeBraces += (line.match(/\}/g) || []).length;
+  }
+
+  if (openBraces !== closeBraces) {
+    if (openBraces > closeBraces) {
+      return { 
+        success: false, 
+        lineNum: lines.length, 
+        message: `Chaves desbalanceadas: Há ${openBraces} abertas '{' e apenas ${closeBraces} fechadas '}'.`, 
+        fixTip: `Adicione ${openBraces - closeBraces} chave(s) fechada(s) '}' no final para alinhar os escopos.` 
+      };
+    } else {
+      return { 
+        success: false, 
+        lineNum: lines.length, 
+        message: `Chaves desbalanceadas: Há ${closeBraces} fechadas '}' e apenas ${openBraces} abertas '{'.`, 
+        fixTip: `Remova chaves fechadas '}' sobressalentes ou adicione as chaves abertas correspondentes.` 
+      };
+    }
+  }
+
+  const patterns = [
+    /^INTENT\s+"[a-zA-Z0-9_\-]+"(\s*\{)?$/,
+    /^CONTEXT(\s*\{)?$/,
+    /^REQUIRE(\s*\{)?$/,
+    /^FLOW(\s*\{)?$/,
+    /^OUTPUT(\s*\{)?$/,
+    /^SEQUENCE(\s*\{)?$/,
+    /^PARALLEL(\s*\{)?$/,
+    /^TIMEOUT\s+[0-9]+s(\s*\{)?$/,
+    /^RETRY\s+[0-9]+(\s*\{)?$/,
+    /^CONDITION\s+"[^"]+"(\s*\{)?$/,
+    /^(CONFIDENTIAL_SCOPE|SCOPE)(\s*\{)?$/,
+    /^(EXECUTE|VERIFY|SEND)\s+[A-Z0-9_]+(\s+[A-Z0-9_]+)*$/,
+    /^VERIFY\s+[a-zA-Z0-9_\-"]+\s*(>=|<=|>|<|==)\s*[0-9.]+$/,
+    /^FALLBACK\s+"[a-zA-Z0-9_\-]+"$/,
+    /^FORMAT\s+"[a-zA-Z0-9_\-]+"$/,
+    /^\}$/
+  ];
+
+  const reservedWordsLower = [
+    'intent', 'context', 'flow', 'sequence', 'parallel',
+    'require', 'execute', 'output', 'fallback',
+    'scope', 'confidential_scope', 'verify', 'timeout', 'retry', 'format'
+  ];
+
+  let inContext = false;
+  let contextNesting = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const lineNum = i + 1;
+
+    let cleanLine = rawLine.split('//')[0].trim();
+    if (!cleanLine) continue;
+
+    if (cleanLine.includes('CONTEXT {')) {
+      inContext = true;
+      contextNesting = 1;
+    }
+
+    let netBraces = 0;
+    if (inContext && !cleanLine.includes('CONTEXT {')) {
+      let openCount = 0;
+      let closeCount = 0;
+      let inDoubleQuote = false;
+      for (let charIdx = 0; charIdx < cleanLine.length; charIdx++) {
+        const char = cleanLine[charIdx];
+        if (char === '"') inDoubleQuote = !inDoubleQuote;
+        if (!inDoubleQuote) {
+          if (char === '{' || char === '[') openCount++;
+          if (char === '}' || char === ']') closeCount++;
+        }
+      }
+      netBraces = openCount - closeCount;
+    }
+
+    let matched = false;
+    if (inContext && !cleanLine.includes('CONTEXT {')) {
+      const tempNesting = contextNesting + netBraces;
+      if (tempNesting === 0 && cleanLine === '}') {
+        matched = true;
+        inContext = false;
+        contextNesting = 0;
+      } else {
+        if (contextNesting === 1) {
+          const simplePattern = /^[a-zA-Z0-9_\-]+:\s*("[^"]*"|[0-9]+(\.[0-9]+)?|true|false)\s*,?$/;
+          const nestedStartPattern = /^[a-zA-Z0-9_\-]+:\s*(\{|\[)\s*$/;
+          matched = simplePattern.test(cleanLine) || nestedStartPattern.test(cleanLine);
+        } else {
+          const nestedKeyValuePattern = /^("[a-zA-Z0-9_\-]+"|[a-zA-Z0-9_\-]+):\s*("[^"]*"|[0-9]+(\.[0-9]+)?|true|false|(\{|\[))\s*,?$/;
+          const arrayItemPattern = /^("[^"]*"|[0-9]+(\.[0-9]+)?|true|false)\s*,?$/;
+          const closingPattern = /^(\{|\[|\}|\]),?$/;
+          matched = nestedKeyValuePattern.test(cleanLine) || arrayItemPattern.test(cleanLine) || closingPattern.test(cleanLine);
+        }
+        contextNesting = tempNesting;
+      }
+    } else {
+      for (const pattern of patterns) {
+        if (pattern.test(cleanLine)) {
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    if (!matched) {
+      return { 
+        success: false, 
+        lineNum, 
+        message: `Caracteres inválidos ou erro de sintaxe: "${cleanLine}"`, 
+        fixTip: `Verifique se há aspas, vírgulas ou chaves mal formadas.` 
+      };
+    }
+
+    const tokens = cleanLine.split(/[\s"{}()]+/);
+    for (const token of tokens) {
+      if (reservedWordsLower.includes(token.toLowerCase()) && token !== token.toUpperCase()) {
+        return { 
+          success: false, 
+          lineNum, 
+          message: `Comando '${token}' escrito em letras minúsculas ou mistas.`, 
+          fixTip: `A DSL diferencia maiúsculas de minúsculas. Use sempre letras maiúsculas: "${token.toUpperCase()}".` 
+        };
+      }
+    }
+
+    if (inContext && !cleanLine.includes('CONTEXT {') && contextNesting >= 1) {
+      if (cleanLine.includes(':')) {
+        const parts = cleanLine.split(':');
+        const key = parts[0].trim();
+        const valuePart = parts.slice(1).join(':').trim();
+        const valueClean = valuePart.replace(/,$/, '').trim();
+
+        if (contextNesting === 1) {
+          let nextLine = '';
+          for (let j = i + 1; j < lines.length; j++) {
+            const nl = lines[j].split('//')[0].trim();
+            if (nl) {
+              nextLine = nl;
+              break;
+            }
+          }
+          const isLastItem = nextLine === '}';
+          if (!valuePart.endsWith(',') && !isLastItem && !valueClean.endsWith('{') && !valueClean.endsWith('[')) {
+            return { 
+              success: false, 
+              lineNum, 
+              message: `Falta uma vírgula ',' para separar este dado do próximo no CONTEXT.`, 
+              fixTip: `Escreva uma vírgula no final da linha: "${cleanLine},"` 
+            };
+          }
+        }
+
+        if (valueClean && isNaN(Number(valueClean)) && valueClean !== 'true' && valueClean !== 'false' && !valueClean.startsWith('{') && !valueClean.startsWith('[')) {
+          if (!valueClean.startsWith('"') || !valueClean.endsWith('"')) {
+            return { 
+              success: false, 
+              lineNum, 
+              message: `O valor do texto '${valueClean}' não está cercado por aspas duplas.`, 
+              fixTip: `Strings no CONTEXT devem ser envolvidas em aspas: ${key}: "${valueClean}"` 
+            };
+          }
+        }
+      }
+    }
+
+    if (!inContext && !cleanLine.includes('CONTEXT {')) {
+      if (cleanLine.includes(',')) {
+        return { 
+          success: false, 
+          lineNum, 
+          message: `Vírgula ',' indevida encontrada fora do bloco CONTEXT.`, 
+          fixTip: `Remova a vírgula. Apenas o bloco CONTEXT usa vírgulas separadoras.` 
+        };
+      }
+    }
+  }
+
+  return { success: true };
+}
+
+function highlightSandboxErrorLine(lineNum) {
+  const textarea = document.getElementById('hacking-editor-textarea');
+  if (!textarea || !lineNum) return;
+  
+  const container = textarea.parentElement;
+  if (container) {
+    container.style.borderColor = 'var(--error)';
+    container.style.boxShadow = '0 0 15px rgba(255, 42, 95, 0.2)';
+    setTimeout(() => {
+      container.style.borderColor = 'rgba(255, 255, 255, 0.03)';
+      container.style.boxShadow = 'none';
+    }, 1500);
+  }
+}
+
+window.downloadPostmanCollection = downloadPostmanCollection;
+window.downloadNodeSDK = downloadNodeSDK;
+window.trySnippet = trySnippet;
+window.copySnippet = copySnippet;
+window.toggleFaqAccordion = toggleFaqAccordion;
+window.runPlaygroundIntent = runPlaygroundIntent;
+window.toggleDetails = toggleDetails;
+
+// Theme Toggle Logic
+function initTheme() {
+  const toggleBtn = document.getElementById('btn-theme-toggle');
+  if (!toggleBtn) return;
+  
+  const savedTheme = localStorage.getItem('theme') || 'dark';
+  if (savedTheme === 'light') {
+    document.body.classList.add('light-theme');
+    toggleBtn.innerHTML = '<span class="theme-icon">☀️</span>';
+  } else {
+    document.body.classList.remove('light-theme');
+    toggleBtn.innerHTML = '<span class="theme-icon">🌙</span>';
+  }
+  
+  toggleBtn.addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light-theme');
+    localStorage.setItem('theme', isLight ? 'light' : 'dark');
+    toggleBtn.innerHTML = isLight ? '<span class="theme-icon">☀️</span>' : '<span class="theme-icon">🌙</span>';
+  });
+}
+
+/**
+ * @description Inicializa as interações da barra de navegação moderna (dropdowns e gaveta mobile).
+ */
+function initNavbarInteractions() {
+  // 1. Menu Mobile Hamburger
+  const toggleBtn = document.getElementById('btn-mobile-toggle');
+  const drawer = document.getElementById('nav-mobile-drawer');
+  if (toggleBtn && drawer) {
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = drawer.classList.toggle('open');
+      toggleBtn.classList.toggle('open', isOpen);
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!drawer.contains(e.target) && !toggleBtn.contains(e.target) && drawer.classList.contains('open')) {
+        drawer.classList.remove('open');
+        toggleBtn.classList.remove('open');
+      }
+    });
+  }
+
+  // 2. Dropdowns Interativos no Desktop e Dispositivos Touch
+  const dropdowns = document.querySelectorAll('.nav-dropdown');
+  dropdowns.forEach(dd => {
+    const trigger = dd.querySelector('.nav-dropdown-trigger');
+    if (trigger) {
+      trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const wasOpen = dd.classList.contains('open');
+        dropdowns.forEach(d => d.classList.remove('open'));
+        if (!wasOpen) dd.classList.add('open');
+      });
+    }
+  });
+
+  document.addEventListener('click', () => {
+    dropdowns.forEach(d => d.classList.remove('open'));
+  });
+}
+
+// Setup Documentation Navigation and Quick Cards
+function initMarketingNav() {
+  // Setup Document Quick Cards click listener
+  document.querySelectorAll('[data-doc-target]').forEach(card => {
+    card.addEventListener('click', () => {
+      const targetId = card.getAttribute('data-doc-target');
+      switchTab(null, 'tab-docs');
+      const targetSec = document.getElementById(targetId);
+      if (targetSec) {
+        setTimeout(() => {
+          targetSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+      }
+    });
+  });
+
+  // Setup Footer Document links click listener
+  document.querySelectorAll('[data-doc-link]').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const targetId = link.getAttribute('data-doc-link');
+      switchTab(null, 'tab-docs');
+      const targetSec = document.getElementById(targetId);
+      if (targetSec) {
+        setTimeout(() => {
+          targetSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+      }
+    });
+  });
+}
+
+// Dictionary terms database
+const DICTIONARY_TERMS = {
+  SEQUENCE: {
+    name: 'SEQUENCE',
+    category: 'Estrutura',
+    desc: 'Executa um bloco de passos de forma sequencial linear, onde o resultado (output) de cada passo é repassado automaticamente como entrada (contexto) para o passo seguinte.',
+    analogy: 'Imagine uma linha de montagem industrial: o operador A monta a peça básica, passa para o operador B que insere a pintura, e por fim para o operador C que a embala. Cada um depende do produto exato finalizado pelo anterior.',
+    preset: 'dsl-purchase',
+    dsl: `SEQUENCE {
+  FETCH INVENTORY
+  EXECUTE PAYMENT
+}`,
+    json: `{
+  "type": "SEQUENCE",
+  "steps": [
+    {
+      "type": "STEP",
+      "capability": "FETCH INVENTORY"
+    },
+    {
+      "type": "STEP",
+      "capability": "EXECUTE PAYMENT"
+    }
+  ]
+}`,
+    python: `from inp_sdk import Sequence, Step
+
+# Define o fluxo sequencial
+flow = Sequence([
+    Step("FETCH INVENTORY"),
+    Step("EXECUTE PAYMENT")
+])
+
+# Envia para execução
+response = client.execute(flow)
+print(response.context)`
+  },
+  PARALLEL: {
+    name: 'PARALLEL',
+    category: 'Estrutura',
+    desc: 'Dispara a execução de múltiplos passos concorrentemente. O motor de execução do INP otimiza o tempo total processando as chamadas em paralelo (Promise.all) e unificando as respostas retornadas.',
+    analogy: 'Como pedir comida e bebida de estabelecimentos separados ao mesmo tempo no aplicativo de delivery: ambos os entregadores viajam concorrentemente, fazendo o seu pedido chegar muito mais rápido do que se você esperasse o primeiro voltar para pedir o segundo.',
+    preset: 'dsl-resilience',
+    dsl: `PARALLEL {
+  FETCH INVENTORY
+  VALIDATE USER
+}`,
+    json: `{
+  "type": "PARALLEL",
+  "steps": [
+    {
+      "type": "STEP",
+      "capability": "FETCH INVENTORY"
+    },
+    {
+      "type": "STEP",
+      "capability": "VALIDATE USER"
+    }
+  ]
+}`,
+    python: `from inp_sdk import Parallel, Step
+
+# Executa múltiplos microsserviços concorrentemente
+flow = Parallel([
+    Step("FETCH INVENTORY"),
+    Step("VALIDATE USER")
+])
+
+response = client.execute(flow)
+print(response.results)`
+  },
+  CONDITION: {
+    name: 'CONDITION',
+    category: 'Controle',
+    desc: 'Avalia uma expressão lógica JavaScript contra o contexto dinâmico da transação. Caso a expressão retorne verdadeiro, o bloco interno de passos é executado; caso contrário, é totalmente ignorado.',
+    analogy: 'Como um controle de acesso em baladas: se o cliente for maior de idade (idade >= 18), a entrada é permitida (executa o passo); se for menor, o fluxo é barrado imediatamente.',
+    preset: 'dsl-purchase',
+    dsl: `CONDITION "context.amount > 100" {
+  EXECUTE PAYMENT
+}`,
+    json: `{
+  "type": "CONDITION",
+  "expression": "context.amount > 100",
+  "steps": [
+    {
+      "type": "STEP",
+      "capability": "EXECUTE PAYMENT"
+    }
+  ]
+}`,
+    python: `from inp_sdk import Condition, Step
+
+# Condiciona a cobrança apenas se o valor exceder 100
+flow = Condition(
+    expression="context.amount > 100",
+    steps=[
+        Step("EXECUTE PAYMENT")
+    ]
+)
+
+response = client.execute(flow)`
+  },
+  RETRY: {
+    name: 'RETRY',
+    category: 'Resiliência',
+    desc: 'Configura uma política de tentativas automáticas imediatas. Caso um passo falhe por erro de rede ou indisponibilidade, o motor de execução do INP repete a chamada até o limite especificado.',
+    analogy: 'Como tentar ligar de volta para alguém após o sinal cair: você tenta discar novamente (até 3 vezes) antes de desistir e assumir que o destinatário não pode atender.',
+    preset: 'dsl-resilience',
+    dsl: `RETRY 3 {
+  EXECUTE PAYMENT
+}`,
+    json: `{
+  "type": "RETRY",
+  "attempts": 3,
+  "steps": [
+    {
+      "type": "STEP",
+      "capability": "EXECUTE PAYMENT"
+    }
+  ]
+}`,
+    python: `from inp_sdk import Retry, Step
+
+# Tenta processar o pagamento até 3 vezes em caso de erro
+flow = Retry(
+    attempts=3,
+    steps=[
+        Step("EXECUTE PAYMENT")
+    ]
+)
+
+response = client.execute(flow)`
+  },
+  TIMEOUT: {
+    name: 'TIMEOUT',
+    category: 'Resiliência',
+    desc: 'Limita o tempo máximo tolerado para a execução de um bloco em milissegundos. Se o tempo for estourado, o motor do INP cancela a operação e executa um failover rápido.',
+    analogy: 'Como a campainha cronometrada de uma prova ou de um jogo de basquete: quando o alarme soa, a ação é encerrada imediatamente e os jogadores devem parar no mesmo instante.',
+    preset: 'dsl-resilience',
+    dsl: `TIMEOUT 2500 {
+  EXECUTE PAYMENT
+}`,
+    json: `{
+  "type": "TIMEOUT",
+  "milliseconds": 2500,
+  "steps": [
+    {
+      "type": "STEP",
+      "capability": "EXECUTE PAYMENT"
+    }
+  ]
+}`,
+    python: `from inp_sdk import Timeout, Step
+
+# Define o tempo limite estrito de 2.5 segundos
+flow = Timeout(
+    milliseconds=2500,
+    steps=[
+        Step("EXECUTE PAYMENT")
+    ]
+)
+
+response = client.execute(flow)`
+  },
+  SCOPE: {
+    name: 'SCOPE',
+    category: 'Controle',
+    desc: 'Isola o estado de execução criando um contexto local clonado. Previne que alterações, escritas ou variáveis temporárias criadas nos passos internos mutem o contexto global.',
+    analogy: 'Como um quadro negro ou rascunho de papel em uma reunião de planejamento: todos desenham fórmulas rápidas ali para fazer simulações sem alterar o contrato final assinado.',
+    preset: 'dsl-advanced',
+    dsl: `SCOPE {
+  EXECUTE PAYMENT
+}`,
+    json: `{
+  "type": "SCOPE",
+  "steps": [
+    {
+      "type": "STEP",
+      "capability": "EXECUTE PAYMENT"
+    }
+  ]
+}`,
+    python: `from inp_sdk import Scope, Step
+
+# Isola variáveis de execução
+flow = Scope([
+    Step("EXECUTE PAYMENT")
+])
+
+response = client.execute(flow)`
+  },
+  DEPENDENCY: {
+    name: 'DEPENDENCY',
+    category: 'Controle',
+    desc: 'Condiciona a execução de tarefas dependentes ao sucesso obrigatório de capacidades ou passos que deveriam rodar anteriormente no fluxo geral.',
+    analogy: 'Como as dependências escolares: você precisa passar na matéria de Algoritmos I (pré-requisito) antes de ter autorização para cursar Algoritmos II.',
+    preset: 'dsl-advanced',
+    dsl: `DEPENDENCY "EXECUTE PAYMENT" {
+  NOTIFY USER
+}`,
+    json: `{
+  "type": "DEPENDENCY",
+  "dependsOn": "EXECUTE PAYMENT",
+  "steps": [
+    {
+      "type": "STEP",
+      "capability": "NOTIFY USER"
+    }
+  ]
+}`,
+    python: `from inp_sdk import Dependency, Step
+
+# Dispara a notificação somente após a aprovação de pagamento
+flow = Dependency(
+    depends_on="EXECUTE PAYMENT",
+    steps=[
+        Step("NOTIFY USER")
+    ]
+)
+
+response = client.execute(flow)`
+  },
+  ENCRYPT: {
+    name: 'ENCRYPT',
+    category: 'Segurança',
+    desc: 'Criptografa chaves ou valores confidenciais contidos no contexto (armazenados em base64) para garantir que trafeguem de forma invisível a intermediários da rede.',
+    analogy: 'Como enviar um documento lacrado dentro de um envelope blindado que apenas o destinatário possui o código numérico secreto para abrir.',
+    preset: 'dsl-advanced',
+    dsl: `ENCRYPT "secret_key"`,
+    json: `{
+  "type": "ENCRYPT",
+  "key": "secret_key"
+}`,
+    python: `from inp_sdk import Encrypt
+
+# Criptografa a chave sensível "secret_key"
+flow = Encrypt(key="secret_key")
+
+response = client.execute(flow)`
+  },
+  DECRYPT: {
+    name: 'DECRYPT',
+    category: 'Segurança',
+    desc: 'Desfaz a encriptação de chaves específicas do contexto, decodificando-as de volta a texto plano para que possam ser processadas por serviços autorizados.',
+    analogy: 'Como o destinatário digitando a senha numérica no envelope blindado recebido, transformando o pacote trancado no papel original legível.',
+    preset: 'dsl-advanced',
+    dsl: `DECRYPT "secret_key"`,
+    json: `{
+  "type": "DECRYPT",
+  "key": "secret_key"
+}`,
+    python: `from inp_sdk import Decrypt
+
+# Descriptografa a chave para leitura dos dados
+flow = Decrypt(key="secret_key")
+
+response = client.execute(flow)`
+  },
+  INTENT: {
+    name: 'INTENT',
+    category: 'Conceito',
+    desc: 'Representa a declaração pura da intenção ou objetivo de negócio expressa pelo usuário (seja por linguagem natural ou estruturada), delegando à rede a responsabilidade de interpretar e compilar o fluxo de execução ótimo.',
+    analogy: 'Como entrar em um táxi e dizer o endereço de destino: você declara para onde quer ir (a intenção), e o motorista calcula as ruas, trânsito e o caminho ideal.',
+    preset: 'natural-purchase',
+    dsl: `// Intenção declarada em linguagem natural
+"Quero comprar o produto P10 com o valor de 450 euros e notificar admin@empresa.com"`,
+    json: `{
+  "type": "INTENT",
+  "value": "Quero comprar o produto P10 com o valor de 450 euros e notificar admin@empresa.com",
+  "resolved": true
+}`,
+    python: `# Envio de intenção direta via SDK
+response = client.submit_intent(
+    "Quero comprar o produto P10 com o valor de 450 euros e notificar admin@empresa.com"
+)
+print(response.resolved_dsl)`
+  },
+  CAPABILITY: {
+    name: 'CAPABILITY',
+    category: 'Conceito',
+    desc: 'Mapeia e representa uma função ou serviço atômico cadastrado no catálogo de APIs do gateway do INP. É a unidade básica de execução de hardware/software acionada pela DSL (ex: buscar estoque, processar débito, despachar mercadoria).',
+    analogy: 'Como os ingredientes catalogados em uma cozinha profissional. A receita (DSL) dita como combiná-los, mas o tomate ou o queijo (Capability) são as peças brutas e úteis.',
+    preset: 'dsl-purchase',
+    dsl: `EXECUTE PAYMENT`,
+    json: `{
+  "type": "STEP",
+  "capability": "EXECUTE PAYMENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Invoca a capacidade diretamente
+flow = Step("EXECUTE PAYMENT")
+
+response = client.execute(flow)`
+  }
+};
+
+// State variables for Dictionary
+let dictActiveTerm = 'SEQUENCE';
+let dictActiveTab = 'dsl'; // 'dsl', 'json', 'python'
+let dictSearchQuery = '';
+let dictSelectedCategory = 'all';
+
+// Syntax Highlighter
+function highlightCode(code, type) {
+  let html = code
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  if (type === 'dsl') {
+    // Comments
+    html = html.replace(/(\/\/.*)/g, '<span class="hl-comment">$1</span>');
+    // Strings
+    html = html.replace(/("[^"]*")/g, '<span class="hl-string">$1</span>');
+    // Keywords
+    const keywords = ['SEQUENCE', 'PARALLEL', 'CONDITION', 'RETRY', 'TIMEOUT', 'SCOPE', 'DEPENDENCY', 'ENCRYPT', 'DECRYPT'];
+    keywords.forEach(kw => {
+      const regex = new RegExp('\\b(' + kw + ')\\b', 'g');
+      html = html.replace(regex, '<span class="hl-keyword">$1</span>');
+    });
+    // Capabilities
+    html = html.replace(/\b(FETCH INVENTORY|EXECUTE PAYMENT|STORE ORDER|NOTIFY USER|VALIDATE USER)\b/g, '<span class="hl-capability">$1</span>');
+    // Numbers
+    html = html.replace(/\b(\d+)\b/g, '<span class="hl-number">$1</span>');
+  } else if (type === 'json') {
+    // Keys
+    html = html.replace(/(".*?")(\s*:)/g, '<span class="hl-key">$1</span>$2');
+    // Strings (values)
+    html = html.replace(/(:\s*)(".*?")/g, '$1<span class="hl-string">$2</span>');
+    // Numbers
+    html = html.replace(/(:\s*)(\d+)/g, '$1<span class="hl-number">$2</span>');
+    // Booleans / null
+    html = html.replace(/(:\s*)(true|false|null)/g, '$1<span class="hl-bool">$2</span>');
+  } else if (type === 'python') {
+    // Comments
+    html = html.replace(/(#.*)/g, '<span class="hl-comment">$1</span>');
+    // Strings
+    html = html.replace(/("[^"]*")/g, '<span class="hl-string">$1</span>');
+    // Keywords
+    const pyKeywords = ['from', 'import', 'print', 'as'];
+    pyKeywords.forEach(kw => {
+      const regex = new RegExp('\\b(' + kw + ')\\b', 'g');
+      html = html.replace(regex, '<span class="hl-keyword">$1</span>');
+    });
+    // Classes
+    const pyClasses = ['Sequence', 'Step', 'Parallel', 'Condition', 'Retry', 'Timeout', 'Scope', 'Dependency', 'Encrypt', 'Decrypt'];
+    pyClasses.forEach(cls => {
+      const regex = new RegExp('\\b(' + cls + ')\\b', 'g');
+      html = html.replace(regex, '<span class="hl-class">$1</span>');
+    });
+    // Numbers
+    html = html.replace(/\b(\d+)\b/g, '<span class="hl-number">$1</span>');
+  }
+  return html;
+}
+
+// Sandbox Translator Data & Engine
+const translatorMapping = [
+  {
+    regex: /(estoque|inventario|inventory|stock|produto|product|item)/i,
+    capability: 'FETCH INVENTORY',
+    explanation: 'Mapeado para "FETCH INVENTORY": detectou termos relativos a produtos e inventário.'
+  },
+  {
+    regex: /(pagar|pagamento|cobrar|payment|pay|checkout|debito|valor|euro|dollar|preço)/i,
+    capability: 'EXECUTE PAYMENT',
+    explanation: 'Mapeado para "EXECUTE PAYMENT": detectou intenção de transação financeira ou cobrança.'
+  },
+  {
+    regex: /(salvar|guardar|store|db|banco|pedido|ordem|order|salva)/i,
+    capability: 'STORE ORDER',
+    explanation: 'Mapeado para "STORE ORDER": identificou gravação ou persistência de pedidos/ordens.'
+  },
+  {
+    regex: /(notificar|email|e-mail|mensagem|sms|avisar|notify|avisa)/i,
+    capability: 'NOTIFY USER',
+    explanation: 'Mapeado para "NOTIFY USER": detectou o envio de avisos ou mensagens ao usuário.'
+  },
+  {
+    regex: /(validar|checar|verificar usuario|auth|validate|permissao|usuario)/i,
+    capability: 'VALIDATE USER',
+    explanation: 'Mapeado para "VALIDATE USER": identificou procedimentos de autorização ou autenticação.'
+  }
+];
+
+function translateNaturalLanguage(text) {
+  if (!text || text.trim() === '') {
+    return {
+      capabilities: [],
+      dsl: '// Digite sua intenção ao lado para ver a compilação do fluxo...',
+      explanations: ['Aguardando entrada de texto do usuário.']
+    };
+  }
+
+  const detectedCapabilities = [];
+  const explanations = [];
+
+  translatorMapping.forEach(item => {
+    if (item.regex.test(text)) {
+      detectedCapabilities.push(item.capability);
+      explanations.push(item.explanation);
+    }
+  });
+
+  let dslBody = '';
+  if (detectedCapabilities.length === 0) {
+    dslBody = '  // Nenhuma capacidade mapeada encontrada. Tente usar termos como "estoque", "pagar", "email".';
+  } else {
+    dslBody = detectedCapabilities.map(cap => `  ${cap}`).join('\n');
+  }
+
+  const hasCondition = /(se\b|caso\b|if\b)/i.test(text);
+  let conditionExpr = 'context.inStock';
+  if (/(valor|preco|preço|amount)/i.test(text)) {
+    conditionExpr = 'context.amount < 500';
+  }
+  if (hasCondition) {
+    dslBody = `  CONDITION "${conditionExpr}" {\n` + 
+      detectedCapabilities.map(cap => `    ${cap}`).join('\n') +
+      `\n  }`;
+    explanations.push(`Inserido bloco "CONDITION \\"${conditionExpr}\\"" devido à condicional ("se").`);
+  }
+
+  const retryMatch = text.match(/(tentar|retry|tentativas)\s*(\d+)/i);
+  let retryCount = 3;
+  if (retryMatch) {
+    retryCount = parseInt(retryMatch[2]);
+    dslBody = `  RETRY ${retryCount} {\n` + 
+      (hasCondition ? `    CONDITION "${conditionExpr}" {\n` + detectedCapabilities.map(cap => `      ${cap}`).join('\n') + `\n    }` : detectedCapabilities.map(cap => `    ${cap}`).join('\n')) +
+      `\n  }`;
+    explanations.push(`Política de tentativas configurada ("RETRY ${retryCount}") baseada no texto.`);
+  } else if (/(tentar|retry|re-executar|novamente)/i.test(text)) {
+    dslBody = `  RETRY ${retryCount} {\n` + 
+      (hasCondition ? `    CONDITION "${conditionExpr}" {\n` + detectedCapabilities.map(cap => `      ${cap}`).join('\n') + `\n    }` : detectedCapabilities.map(cap => `    ${cap}`).join('\n')) +
+      `\n  }`;
+    explanations.push(`Inserida política "RETRY ${retryCount}" devido a termos de tentativa/reinicialização.`);
+  }
+
+  const timeoutMatch = text.match(/(timeout|limite de tempo|segundos|ms)\s*(\d+)/i);
+  let timeoutVal = 3000;
+  if (timeoutMatch) {
+    const num = parseInt(timeoutMatch[2]);
+    timeoutVal = num < 100 ? num * 1000 : num;
+    dslBody = `  TIMEOUT ${timeoutVal} {\n` + 
+      (retryMatch || /(tentar|retry)/i.test(text) ? `    RETRY ${retryCount} {\n` + (hasCondition ? `      CONDITION "${conditionExpr}" {\n` + detectedCapabilities.map(cap => `        ${cap}`).join('\n') + `\n      }` : `      ` + detectedCapabilities.map(cap => `  ` + cap).join('\n')) + `\n    }` : detectedCapabilities.map(cap => `    ${cap}`).join('\n')) +
+      `\n  }`;
+    explanations.push(`Envolvido com bloco "TIMEOUT ${timeoutVal}ms" a partir de indicadores de limite de tempo.`);
+  }
+
+  let finalDsl = `SEQUENCE {\n${dslBody}\n}`;
+  explanations.unshift('Estrutura principal envolvida em "SEQUENCE" sequencial.');
+
+  return {
+    capabilities: detectedCapabilities,
+    dsl: finalDsl,
+    explanations: explanations
+  };
+}
+
+// Renderers
+function renderDictionarySidebar() {
+  const sidebar = document.getElementById('dict-sidebar-list');
+  if (!sidebar) return;
+
+  sidebar.innerHTML = '';
+  
+  Object.keys(DICTIONARY_TERMS).forEach(key => {
+    const term = DICTIONARY_TERMS[key];
+    
+    // Search match
+    const matchesSearch = term.name.toLowerCase().includes(dictSearchQuery.toLowerCase()) || 
+                          term.desc.toLowerCase().includes(dictSearchQuery.toLowerCase());
+    
+    // Category match
+    const matchesCategory = dictSelectedCategory === 'all' || term.category === dictSelectedCategory;
+
+    if (matchesSearch && matchesCategory) {
+      const item = document.createElement('div');
+      item.className = `dict-sidebar-item${dictActiveTerm === key ? ' active' : ''}`;
+      
+      const badgeClass = term.category === 'Segurança' ? 'type-security' : 'type-flow';
+      
+      item.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+          <span style="font-family: 'Fira Code', monospace; font-size: 13px; font-weight: 700; color: var(--text);">${term.name}</span>
+          <span class="dict-type-badge ${badgeClass}">${term.category}</span>
+        </div>
+        <p style="font-size: 11.5px; color: var(--text-muted); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${term.desc}</p>
+      `;
+
+      item.addEventListener('click', () => {
+        dictActiveTerm = key;
+        renderDictionarySidebar();
+        renderDictionaryDetail();
+      });
+
+      sidebar.appendChild(item);
+    }
+  });
+}
+
+function renderDictionaryDetail() {
+  const detailPanel = document.getElementById('dict-detail-content');
+  if (!detailPanel) return;
+
+  const term = DICTIONARY_TERMS[dictActiveTerm];
+  if (!term) {
+    detailPanel.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 40px;">Selecione um termo para explorar...</div>';
+    return;
+  }
+
+  const badgeClass = term.category === 'Segurança' ? 'type-security' : 'type-flow';
+  const activeCodeContent = term[dictActiveTab];
+  const highlighted = highlightCode(activeCodeContent, dictActiveTab);
+
+  detailPanel.innerHTML = `
+    <div class="dict-detail-header">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+        <h2 style="font-family: 'Fira Code', monospace; font-size: 22px; font-weight: 800; color: var(--text); margin: 0;">${term.name}</h2>
+        <span class="dict-type-badge ${badgeClass}" style="font-size: 10px; padding: 3px 8px;">${term.category}</span>
+      </div>
+      <p style="font-size: 14.5px; color: var(--text-muted); line-height: 1.5; margin-bottom: 20px;">${term.desc}</p>
+    </div>
+
+    <div class="dict-analogy-box">
+      <div style="display: flex; gap: 10px; align-items: flex-start;">
+        <span style="font-size: 20px; line-height: 1;">💡</span>
+        <div>
+          <h4 style="font-size: 13px; font-weight: 700; color: var(--primary-light); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Analogia com o Mundo Real</h4>
+          <p style="font-size: 13px; color: var(--text); line-height: 1.45; margin: 0;">${term.analogy}</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="dict-code-hub">
+      <div class="dict-code-header">
+        <div class="dict-code-tabs">
+          <button class="dict-tab-btn${dictActiveTab === 'dsl' ? ' active' : ''}" data-tab="dsl">DSL Syntax</button>
+          <button class="dict-tab-btn${dictActiveTab === 'json' ? ' active' : ''}" data-tab="json">AST Compilado (JSON)</button>
+          <button class="dict-tab-btn${dictActiveTab === 'python' ? ' active' : ''}" data-tab="python">Python SDK</button>
+        </div>
+        <div class="dict-code-actions">
+          <button class="dict-code-action-btn" id="dict-copy-btn">
+            <svg style="width: 13px; height: 13px;" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M8 7V5a2 2 0 012-2h9a2 2 0 012 2v10a2 2 0 01-2 2h-2M8 7H5a2 2 0 00-2 2v10a2 2 0 002 2h9a2 2 0 002-2v-3M8 7v4a2 2 0 002 2h4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+            Copiar
+          </button>
+          <button class="dict-code-action-btn run-btn" id="dict-try-btn">
+            🚀 Testar
+          </button>
+        </div>
+      </div>
+      <pre class="dict-pre-explorer"><code class="fira-code">${highlighted}</code></pre>
+    </div>
+  `;
+
+  // Bind tab toggles
+  detailPanel.querySelectorAll('.dict-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      dictActiveTab = btn.getAttribute('data-tab');
+      renderDictionaryDetail();
+    });
+  });
+
+  // Bind copy button
+  const copyBtn = detailPanel.querySelector('#dict-copy-btn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', () => {
+      copySnippet(activeCodeContent);
+      const originalText = copyBtn.innerHTML;
+      copyBtn.innerHTML = `✓ Copiado`;
+      setTimeout(() => { copyBtn.innerHTML = originalText; }, 2000);
+    });
+  }
+
+  // Bind try button
+  const tryBtn = detailPanel.querySelector('#dict-try-btn');
+  if (tryBtn) {
+    tryBtn.addEventListener('click', () => {
+      trySnippet(term.preset);
+    });
+  }
+}
+
+function updateSandboxTranslation() {
+  const inputEl = document.getElementById('sandbox-input');
+  const capContainer = document.getElementById('sandbox-capabilities');
+  const dslOutput = document.getElementById('sandbox-dsl-output');
+  const explContainer = document.getElementById('sandbox-explanations');
+
+  if (!inputEl) return;
+
+  const text = inputEl.value;
+  const result = translateNaturalLanguage(text);
+
+  // Render capabilities
+  if (capContainer) {
+    capContainer.innerHTML = '';
+    if (result.capabilities.length === 0) {
+      capContainer.innerHTML = '<span style="font-size: 12px; color: var(--text-muted);">Nenhuma capacidade inferida</span>';
+    } else {
+      result.capabilities.forEach(cap => {
+        const pill = document.createElement('span');
+        pill.className = 'cap-pill';
+        pill.textContent = cap;
+        capContainer.appendChild(pill);
+      });
+    }
+  }
+
+  // Render DSL
+  if (dslOutput) {
+    dslOutput.innerHTML = highlightCode(result.dsl, 'dsl');
+  }
+
+  // Render Explanations
+  if (explContainer) {
+    explContainer.innerHTML = '';
+    result.explanations.forEach(expl => {
+      const li = document.createElement('li');
+      li.style.fontSize = '12.5px';
+      li.style.color = 'var(--text-muted)';
+      li.style.marginBottom = '4px';
+      li.innerHTML = `• ${expl}`;
+      explContainer.appendChild(li);
+    });
+  }
+}
+
+function initDictionary() {
+  // Bind search input
+  const searchInput = document.getElementById('dict-search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      dictSearchQuery = e.target.value;
+      renderDictionarySidebar();
+    });
+  }
+
+  // Bind category filters
+  document.querySelectorAll('.dict-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.dict-filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      dictSelectedCategory = btn.getAttribute('data-category');
+      renderDictionarySidebar();
+    });
+  });
+
+  // Bind Sandbox inputs
+  const sandboxInput = document.getElementById('sandbox-input');
+  if (sandboxInput) {
+    sandboxInput.addEventListener('input', updateSandboxTranslation);
+  }
+
+  // Bind Sandbox suggestions
+  document.querySelectorAll('.suggestion-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      if (sandboxInput) {
+        sandboxInput.value = pill.getAttribute('data-text');
+        updateSandboxTranslation();
+      }
+    });
+  });
+
+  // Bind Sandbox copy
+  const sandboxCopyBtn = document.getElementById('sandbox-copy-dsl');
+  if (sandboxCopyBtn) {
+    sandboxCopyBtn.addEventListener('click', () => {
+      const dslOutput = document.getElementById('sandbox-dsl-output');
+      if (dslOutput) {
+        copySnippet(dslOutput.textContent);
+        const originalText = sandboxCopyBtn.innerHTML;
+        sandboxCopyBtn.innerHTML = `✓ Copiado`;
+        setTimeout(() => { sandboxCopyBtn.innerHTML = originalText; }, 2000);
+      }
+    });
+  }
+
+  // Bind Sandbox execute playground
+  const sandboxPlayBtn = document.getElementById('sandbox-btn-playground');
+  if (sandboxPlayBtn) {
+    sandboxPlayBtn.addEventListener('click', () => {
+      const dslOutput = document.getElementById('sandbox-dsl-output');
+      if (dslOutput) {
+        const generatedDsl = dslOutput.textContent;
+        // Inject into playground code input
+        const playCode = document.getElementById('playground-code');
+        const playType = document.getElementById('playground-type');
+        if (playCode && playType) {
+          playCode.value = generatedDsl;
+          playType.value = 'dsl';
+          // Trigger change updates
+          updateLineNumbers();
+          updateFlowPreview();
+        }
+        // Switch tab
+        switchTab(null, 'tab-playground');
+      }
+    });
+  }
+
+  // Initial draw
+  renderDictionarySidebar();
+  renderDictionaryDetail();
+  updateSandboxTranslation();
+}
+
+// Integration Codes Database for the Microservices Tab
+const INTEGRATION_CODES = {
+  python: {
+    singleRegister: `from inp_sdk import INPClient, Service
+
+# Inicializa o cliente do gateway INP
+client = INPClient("http://localhost:3000")
+
+# Declara o microsserviço de Pagamento
+payment_service = Service(
+    name="secure-payment-service",
+    endpoint="http://localhost:3001/api/pay",
+    capabilities=["EXECUTE PAYMENT"]
+)
+
+# Registra a capacidade no catálogo do Gateway
+client.register_service(payment_service)
+print("Microsserviço de Pagamento registrado com sucesso!")`,
+    singleClient: `from inp_sdk import INPClient
+
+client = INPClient("http://localhost:3000")
+
+# Executa uma transação de forma declarativa e direta
+response = client.execute_capability(
+    capability="EXECUTE PAYMENT",
+    payload={"amount": 250.75, "currency": "EUR"}
+)
+
+print(f"Status da Cobrança: {response['status']}")
+# Output: Status da Cobrança: approved`,
+    sequence: `from inp_sdk import INPClient, Sequence, Step
+
+client = INPClient("http://localhost:3000")
+
+# Orquestração Linear: Checa o estoque ANTES de processar o pagamento
+flow = Sequence([
+    Step("FETCH INVENTORY", payload={"product_id": "P10"}),
+    Step("EXECUTE PAYMENT", payload={"amount": 450.00})
+])
+
+response = client.execute(flow)
+print("Fluxo finalizado com sucesso!", response.context)`,
+    parallel: `from inp_sdk import INPClient, Parallel, Step
+
+client = INPClient("http://localhost:3000")
+
+# Orquestração Concorrente: Dispara estoque e cadastro em paralelo
+flow = Parallel([
+    Step("FETCH INVENTORY", payload={"product_id": "A1"}),
+    Step("VALIDATE USER", payload={"user_id": "usr_99"})
+])
+
+response = client.execute(flow)
+print("Resultados consolidados:", response.results)`,
+    resilience: `from inp_sdk import INPClient, Retry, Timeout, Step
+
+client = INPClient("http://localhost:3000")
+
+# Orquestração com Garantia de Resiliência nativa
+flow = Timeout(
+    milliseconds=3000,
+    steps=[
+        Retry(
+            attempts=3,
+            steps=[Step("EXECUTE PAYMENT", payload={"amount": 100.00})]
+        )
+    ]
+)
+
+response = client.execute(flow)`
+  },
+  node: {
+    singleRegister: `const { INPClient, Service } = require('inp-sdk');
+
+// Inicializa o cliente do gateway INP
+const client = new INPClient("http://localhost:3000");
+
+// Declara o microsserviço de Pagamento
+const paymentService = new Service({
+  name: "secure-payment-service",
+  endpoint: "http://localhost:3001/api/pay",
+  capabilities: ["EXECUTE PAYMENT"]
+});
+
+// Registra a capacidade no catálogo do Gateway
+client.registerService(paymentService)
+  .then(() => console.log("Microsserviço registrado!"))
+  .catch(err => console.error("Falha no registro:", err));`,
+    singleClient: `const { INPClient } = require('inp-sdk');
+const client = new INPClient("http://localhost:3000");
+
+// Executa uma transação de forma declarativa e direta
+client.executeCapability("EXECUTE PAYMENT", { amount: 250.75, currency: "EUR" })
+  .then(response => {
+    console.log(\`Status da Cobrança: \${response.status}\`);
+    // Output: Status da Cobrança: approved
+  });`,
+    sequence: `const { INPClient, Sequence, Step } = require('inp-sdk');
+const client = new INPClient("http://localhost:3000");
+
+// Orquestração Linear: Checa o estoque ANTES de processar o pagamento
+const flow = new Sequence([
+  new Step("FETCH INVENTORY", { product_id: "P10" }),
+  new Step("EXECUTE PAYMENT", { amount: 450.00 })
+]);
+
+client.execute(flow).then(response => {
+  console.log("Fluxo finalizado com sucesso!", response.context);
+});`,
+    parallel: `const { INPClient, Parallel, Step } = require('inp-sdk');
+const client = new INPClient("http://localhost:3000");
+
+// Orquestração Concorrente: Dispara estoque e cadastro em paralelo
+const flow = new Parallel([
+  new Step("FETCH INVENTORY", { product_id: "A1" }),
+  new Step("VALIDATE USER", { user_id: "usr_99" })
+]);
+
+client.execute(flow).then(response => {
+  console.log("Resultados consolidados:", response.results);
+});`,
+    resilience: `const { INPClient, Retry, Timeout, Step } = require('inp-sdk');
+const client = new INPClient("http://localhost:3000");
+
+// Orquestração com Garantia de Resiliência nativa
+const flow = new Timeout({
+  milliseconds: 3000,
+  steps: [
+    new Retry({
+      attempts: 3,
+      steps: [new Step("EXECUTE PAYMENT", { amount: 100.00 })]
+    })
+  ]
+});
+
+client.execute(flow).then(response => {
+  console.log("Transação resiliente concluída!");
+});`
+  },
+  curl: {
+    singleRegister: `# Registra o Microsserviço de Pagamento no catálogo de APIs do Gateway
+curl -X POST http://localhost:3000/api/services/register \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "secure-payment-service",
+    "endpoint": "http://localhost:3001/api/pay",
+    "capabilities": ["EXECUTE PAYMENT"]
+  }'`,
+    singleClient: `# Executa diretamente uma capacidade informando o payload
+curl -X POST http://localhost:3000/api/gateway/execute \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "capability": "EXECUTE PAYMENT",
+    "context": { "amount": 250.75, "currency": "EUR" }
+  }'`,
+    sequence: `# Executa o fluxo de Orquestração Linear enviando a DSL para compilação
+curl -X POST http://localhost:3000/api/gateway/intent \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "type": "dsl",
+    "code": "SEQUENCE { FETCH INVENTORY EXECUTE PAYMENT }",
+    "context": { "product_id": "P10", "amount": 450.00 }
+  }'`,
+    parallel: `# Executa o fluxo de Orquestração Concorrente via API
+curl -X POST http://localhost:3000/api/gateway/intent \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "type": "dsl",
+    "code": "PARALLEL { FETCH INVENTORY VALIDATE USER }",
+    "context": { "product_id": "A1", "user_id": "usr_99" }
+  }'`,
+    resilience: `# Executa o fluxo contendo Timeout de 3s e até 3 tentativas automáticas
+curl -X POST http://localhost:3000/api/gateway/intent \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "type": "dsl",
+    "code": "TIMEOUT 3000 { RETRY 3 { EXECUTE PAYMENT } }",
+    "context": { "amount": 100.00 }
+  }'`
+  }
+};
+
+// State variables for Microservices Tab
+let microActiveLang = 'python';
+let microActiveOrchType = 'sequence'; // 'sequence', 'parallel', 'resilience'
+let singleSimTimeoutId = null;
+let multiSimTimeoutId = null;
+
+function renderMicroservicesTab() {
+  const registerCodeEl = document.getElementById('micro-code-register');
+  const clientCodeEl = document.getElementById('micro-code-client');
+  const orchCodeEl = document.getElementById('micro-code-orch');
+
+  const langData = INTEGRATION_CODES[microActiveLang];
+  if (!langData) return;
+
+  // Render Single Service Codes
+  if (registerCodeEl) {
+    registerCodeEl.innerHTML = highlightCode(langData.singleRegister, microActiveLang === 'curl' ? 'dsl' : microActiveLang);
+  }
+  if (clientCodeEl) {
+    clientCodeEl.innerHTML = highlightCode(langData.singleClient, microActiveLang === 'curl' ? 'dsl' : microActiveLang);
+  }
+
+  // Render Orchestration Code
+  if (orchCodeEl) {
+    const activeOrchCode = langData[microActiveOrchType];
+    orchCodeEl.innerHTML = highlightCode(activeOrchCode, microActiveLang === 'curl' ? 'dsl' : microActiveLang);
+  }
+}
+
+function runSingleServiceSimulation() {
+  const consoleEl = document.getElementById('single-console-logs');
+  if (!consoleEl) return;
+
+  // Clear previous timeout and logs
+  if (singleSimTimeoutId) clearTimeout(singleSimTimeoutId);
+  consoleEl.innerHTML = '';
+
+  const logs = [
+    { delay: 0, text: '🕒 [12:00:00.000] [CLIENT] Enviando requisição para capacidade "EXECUTE PAYMENT"...' },
+    { delay: 500, text: '⚙️ [12:00:00.500] [GATEWAY] Requisição recebida pelo Gateway Principal (Porta 3000).' },
+    { delay: 1000, text: '🔍 [12:00:01.000] [GATEWAY] Buscando microsserviços ativos expondo a capacidade "EXECUTE PAYMENT"...' },
+    { delay: 1500, text: '✅ [12:00:01.500] [GATEWAY] Serviço encontrado: "secure-payment-service" atalhado em http://localhost:3001' },
+    { delay: 2000, text: '➡️ [12:00:02.000] [GATEWAY] Direcionando payload para http://localhost:3001/api/pay...' },
+    { delay: 2500, text: '💰 [12:00:02.500] [MICROSSERVIÇO: PAYMENT] Recebido payload: { amount: 250.75, currency: "EUR" }' },
+    { delay: 2900, text: '⚡ [12:00:02.900] [MICROSSERVIÇO: PAYMENT] Transação processada e aprovada. ID: txn_1781352366979' },
+    { delay: 3400, text: '↩️ [12:00:03.400] [GATEWAY] Consolidando resposta do microsserviço e retornando ao cliente...' },
+    { delay: 3900, text: '🎉 [12:00:03.900] [CLIENT] Resposta recebida com sucesso! { success: true, status: "approved" } (Tempo Total: 3.9s, HTTP 200)' }
+  ];
+
+  let currentLogIdx = 0;
+  function addNextLog() {
+    if (currentLogIdx < logs.length) {
+      const log = logs[currentLogIdx];
+      const p = document.createElement('p');
+      p.className = 'console-log-line';
+      p.textContent = log.text;
+      
+      // Color coding
+      if (log.text.includes('[CLIENT]')) p.style.color = '#38bdf8';
+      else if (log.text.includes('[GATEWAY]')) p.style.color = '#c084fc';
+      else if (log.text.includes('[MICROSSERVIÇO:')) p.style.color = '#4ec9b0';
+      
+      consoleEl.appendChild(p);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+
+      currentLogIdx++;
+      if (currentLogIdx < logs.length) {
+        singleSimTimeoutId = setTimeout(addNextLog, logs[currentLogIdx].delay - log.delay);
+      }
+    }
+  }
+
+  addNextLog();
+}
+
+function runMultipleServiceSimulation() {
+  const consoleEl = document.getElementById('multi-console-logs');
+  if (!consoleEl) return;
+
+  // Clear previous timeout and logs
+  if (multiSimTimeoutId) clearTimeout(multiSimTimeoutId);
+  consoleEl.innerHTML = '';
+
+  let logs = [];
+
+  if (microActiveOrchType === 'sequence') {
+    logs = [
+      { delay: 0, text: '🕒 [12:00:00.000] [CLIENT] Enviando requisição de fluxo SEQUENCE { FETCH INVENTORY, EXECUTE PAYMENT }...' },
+      { delay: 400, text: '⚙️ [12:00:00.400] [GATEWAY] Compilando grafo DSL para orquestração sequencial linear...' },
+      { delay: 800, text: '🚀 [12:00:00.800] [GATEWAY] Iniciando execução do Passo 1: "FETCH INVENTORY"...' },
+      { delay: 1200, text: '📦 [12:00:01.200] [MICROSSERVIÇO: INVENTORY] Consultando estoque para o ID "P10"...' },
+      { delay: 1500, text: '✅ [12:00:01.500] [MICROSSERVIÇO: INVENTORY] Item em estoque (Quantidade disponível: 12 unidades).' },
+      { delay: 1900, text: '⚙️ [12:00:01.900] [GATEWAY] Passo 1 concluído. Injetando dados de estoque no contexto transacional.' },
+      { delay: 2300, text: '🚀 [12:00:02.300] [GATEWAY] Iniciando execução do Passo 2: "EXECUTE PAYMENT" com valor de 450.00 EUR...' },
+      { delay: 2800, text: '💰 [12:00:02.800] [MICROSSERVIÇO: PAYMENT] Processando cobrança segura...' },
+      { delay: 3100, text: '✅ [12:00:03.100] [MICROSSERVIÇO: PAYMENT] Cobrança efetuada com sucesso.' },
+      { delay: 3500, text: '⚙️ [12:00:03.500] [GATEWAY] Grafo de execução concluído sem erros. Unificando contextos...' },
+      { delay: 3900, text: '🎉 [12:00:03.900] [CLIENT] Fluxo finalizado! Resposta: { success: true, stock_checked: true, status: "approved" } (Latência: 3.9s)' }
+    ];
+  } else if (microActiveOrchType === 'parallel') {
+    logs = [
+      { delay: 0, text: '🕒 [12:00:00.000] [CLIENT] Enviando requisição de fluxo PARALLEL { FETCH INVENTORY, VALIDATE USER }...' },
+      { delay: 400, text: '⚙️ [12:00:00.400] [GATEWAY] Compilando grafo DSL para processamento paralelo concorrente...' },
+      { delay: 800, text: '⚡ [12:00:00.800] [GATEWAY] Disparando múltiplas capacidades simultaneamente via Promise.all...' },
+      { delay: 1100, text: '➡️ [12:00:01.100] [GATEWAY] -> Iniciando chamada paralela: "FETCH INVENTORY" para InventoryService' },
+      { delay: 1200, text: '➡️ [12:00:01.200] [GATEWAY] -> Iniciando chamada paralela: "VALIDATE USER" para UserService' },
+      { delay: 1800, text: '👤 [12:00:01.800] [MICROSSERVIÇO: USER] Usuário "usr_99" verificado (Nível: Gold, Sem pendências).' },
+      { delay: 2300, text: '📦 [12:00:02.300] [MICROSSERVIÇO: INVENTORY] Produto "A1" disponível em estoque (Quantidade: 84).' },
+      { delay: 2700, text: '⚙️ [12:00:02.700] [GATEWAY] Todas as promessas concorrentes foram resolvidas com sucesso.' },
+      { delay: 3200, text: '⚙️ [12:00:03.200] [GATEWAY] Consolidando resultados das ramificações paralelas no contexto global...' },
+      { delay: 3700, text: '🎉 [12:00:03.700] [CLIENT] Resposta em lote consolidada: [ { inventory: "available" }, { user: "valid" } ] (Tempo total: 3.7s)' }
+    ];
+  } else {
+    logs = [
+      { delay: 0, text: '🕒 [12:00:00.000] [CLIENT] Enviando fluxo TIMEOUT 3000 { RETRY 3 { EXECUTE PAYMENT } }...' },
+      { delay: 400, text: '🛡️ [12:00:00.400] [GATEWAY] Inicializando guardas de resiliência. Timeout máximo tolerado: 3000ms.' },
+      { delay: 800, text: '🚀 [12:00:00.800] [GATEWAY] Tentativa 1/3: Iniciando chamada de "EXECUTE PAYMENT"...' },
+      { delay: 1300, text: '⚠️ [12:00:01.300] [GATEWAY] [ERRO] Falha de comunicação na tentativa 1: Connection Timeout (ETIMEDOUT).' },
+      { delay: 1700, text: '🔄 [12:00:01.700] [GATEWAY] Aplicando política de Retry. Aguardando recuo de 500ms...' },
+      { delay: 2200, text: '🚀 [12:00:02.200] [GATEWAY] Tentativa 2/3: Re-executando chamada de "EXECUTE PAYMENT"...' },
+      { delay: 2600, text: '💰 [12:00:02.600] [MICROSSERVIÇO: PAYMENT] Conexão restabelecida. Cobrança de 100.00 EUR efetuada.' },
+      { delay: 3000, text: '✅ [12:00:03.000] [GATEWAY] Sucesso na tentativa 2! Cancelando tentativas subsequentes...' },
+      { delay: 3400, text: '🎉 [12:00:03.400] [CLIENT] Resposta resiliente concluída dentro dos limites! { success: true, status: "approved" } (Latência: 3.4s)' }
+    ];
+  }
+
+  let currentLogIdx = 0;
+  function addNextLog() {
+    if (currentLogIdx < logs.length) {
+      const log = logs[currentLogIdx];
+      const p = document.createElement('p');
+      p.className = 'console-log-line';
+      p.textContent = log.text;
+      
+      // Color coding
+      if (log.text.includes('[CLIENT]')) p.style.color = '#38bdf8';
+      else if (log.text.includes('[GATEWAY]')) p.style.color = '#c084fc';
+      else if (log.text.includes('[MICROSSERVIÇO:')) p.style.color = '#4ec9b0';
+      else if (log.text.includes('[ERRO]')) p.style.color = '#f43f5e';
+      else if (log.text.includes('Retry')) p.style.color = '#fbbf24';
+      
+      consoleEl.appendChild(p);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+
+      currentLogIdx++;
+      if (currentLogIdx < logs.length) {
+        multiSimTimeoutId = setTimeout(addNextLog, logs[currentLogIdx].delay - log.delay);
+      }
+    }
+  }
+
+  addNextLog();
+}
+
+function initMicroservicesTab() {
+  // Bind Language Selector Buttons
+  document.querySelectorAll('.integration-lang-selector .lang-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.integration-lang-selector .lang-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      microActiveLang = btn.getAttribute('data-lang');
+      renderMicroservicesTab();
+    });
+  });
+
+  // Bind Orchestration Type Buttons
+  document.querySelectorAll('.orch-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.orch-filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      microActiveOrchType = btn.getAttribute('data-orch');
+      renderMicroservicesTab();
+    });
+  });
+
+  // Bind Simulator buttons
+  const runSingleBtn = document.getElementById('btn-run-single-sim');
+  if (runSingleBtn) {
+    runSingleBtn.addEventListener('click', runSingleServiceSimulation);
+  }
+
+  const runMultiBtn = document.getElementById('btn-run-multi-sim');
+  if (runMultiBtn) {
+    runMultiBtn.addEventListener('click', runMultipleServiceSimulation);
+  }
+
+  // Initial render
+  renderMicroservicesTab();
+}
+
+// Set up DOM interaction and event handling after DOMContentLoaded / readyState check
+function init() {
+  const playgroundCode = document.getElementById('playground-code');
+  const playgroundType = document.getElementById('playground-type');
+  
+  if (playgroundCode) {
+    playgroundCode.addEventListener('input', () => {
+      updateLineNumbers();
+      updateFlowPreview();
+    });
+    
+    const gutter = document.getElementById('editor-line-numbers');
+    playgroundCode.addEventListener('scroll', () => {
+      if (gutter) {
+        gutter.scrollTop = playgroundCode.scrollTop;
+      }
+    });
+    
+    if (gutter) {
+      gutter.addEventListener('wheel', (e) => {
+        playgroundCode.scrollTop += e.deltaY;
+        e.preventDefault();
+      });
+    }
+  }
+  
+  if (playgroundType) {
+    playgroundType.addEventListener('change', (e) => {
+      const isDsl = e.target.value === 'dsl';
+      const indicator = document.getElementById('editor-lang-indicator');
+      if (indicator) {
+        indicator.innerText = isDsl ? 'INP DSL' : 'Linguagem Humana';
+      }
+      updateFlowPreview();
+    });
+  }
+
+  // Bind navigation tabs and elements
+  document.querySelectorAll('[data-tab]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      const tabId = el.getAttribute('data-tab');
+      switchTab(e, tabId);
+    });
+  });
+
+  // Initialize Theme, Navbar and Marketing Nav Links
+  initTheme();
+  initNavbarInteractions();
+  initMarketingNav();
+
+  // Setup visual builder and syntax lab inside Guia DSL
+  initSubTabSwitching();
+  initConceptExplorer();
+  initSyntaxLabChallenges();
+  
+  const builderInputs = [
+    'builder-intent-name', 'builder-amount', 'builder-user-id',
+    'builder-token', 'builder-flow-type', 'builder-flow-action',
+    'builder-zk-toggle', 'builder-resilience-toggle', 'builder-verify-toggle', 'builder-fallback-toggle',
+    'builder-timeout-val', 'builder-retry-val', 'builder-verify-val', 'builder-fallback-val'
+  ];
+  builderInputs.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('input', updateBuilderLiveDSL);
+      el.addEventListener('change', updateBuilderLiveDSL);
+    }
+  });
+  updateBuilderLiveDSL();
+
+  const btnSendBuilder = document.getElementById('btn-send-builder-to-play');
+  if (btnSendBuilder) {
+    btnSendBuilder.addEventListener('click', () => {
+      const code = btnSendBuilder.getAttribute('data-dsl-code');
+      const playgroundCode = document.getElementById('playground-code');
+      const playgroundType = document.getElementById('playground-type');
+      if (playgroundCode && code) {
+        playgroundCode.value = code;
+        if (playgroundType) {
+          playgroundType.value = 'dsl';
+          const indicator = document.getElementById('editor-lang-indicator');
+          if (indicator) indicator.innerText = 'INP DSL';
+        }
+        updateLineNumbers();
+        updateFlowPreview();
+        
+        // Switch tab to Playground
+        switchTab(null, 'tab-playground');
+        
+        // Scroll playground into view
+        const targetSection = document.getElementById('tab-playground');
+        if (targetSection) {
+          targetSection.scrollIntoView({ behavior: 'smooth' });
+        }
+      }
+    });
+  }
+
+  // Bind preset changes
+  const selectPresets = document.getElementById('playground-presets');
+  if (selectPresets) {
+    selectPresets.addEventListener('change', loadPlaygroundPreset);
+  }
+
+  // Bind execution trigger
+  const btnRun = document.getElementById('btn-run-intent');
+  if (btnRun) {
+    btnRun.addEventListener('click', runPlaygroundIntent);
+  }
+
+  // Bind downloads
+  const btnPostman = document.getElementById('btn-download-postman');
+  if (btnPostman) {
+    btnPostman.addEventListener('click', downloadPostmanCollection);
+  }
+  const btnSdk = document.getElementById('btn-download-sdk');
+  if (btnSdk) {
+    btnSdk.addEventListener('click', downloadNodeSDK);
+  }
+
+  // Bind copy snippet buttons
+  document.querySelectorAll('.btn-copy').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const snippet = btn.getAttribute('data-snippet');
+      copySnippet(snippet, btn);
+    });
+  });
+
+  // Bind try snippet buttons
+  document.querySelectorAll('.btn-try').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const preset = btn.getAttribute('data-preset');
+      trySnippet(preset);
+    });
+  });
+
+  // Bind FAQ accordion click toggles
+  document.querySelectorAll('.faq-card').forEach(card => {
+    card.addEventListener('click', () => {
+      toggleFaqAccordion(card);
+    });
+  });
+
+  // Bind timeline toggle details via event delegation
+  const timeline = document.getElementById('play-timeline');
+  if (timeline) {
+    timeline.addEventListener('click', (e) => {
+      let target = e.target;
+      while (target && target !== timeline) {
+        if (target.hasAttribute('data-toggle-target')) {
+          const stepId = target.getAttribute('data-toggle-target');
+          toggleDetails(stepId);
+          break;
+        }
+        target = target.parentElement;
+      }
+    });
+  }
+
+  // Bind toggle service and chaos simulation click delegation (Consola de Governança / Admin)
+  document.addEventListener('click', async (e) => {
+    // 1. Alternar Ativo/Inativo de Microsserviço
+    const toggleBtn = e.target.closest('.btn-toggle-service');
+    if (toggleBtn) {
+      const serviceId = toggleBtn.getAttribute('data-service-id');
+      try {
+        const res = await authFetch(`/api/services/${encodeURIComponent(serviceId)}/toggle-active`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Estado do microsserviço "${serviceId}" alternado com sucesso!`, 'success');
+          if (typeof loadAdminServiceControls === 'function') loadAdminServiceControls();
+          if (typeof loadActiveServices === 'function') loadActiveServices();
+          if (typeof loadHomeStats === 'function') loadHomeStats();
+        } else {
+          showToast(data.error || 'Falha ao alterar estado do serviço.', 'error');
+        }
+      } catch (err) {
+        showToast('Erro de rede ou permissão ao alterar serviço.', 'error');
+        console.error('Toggle service failed:', err);
+      }
+      return;
+    }
+
+    // 2. Injeção de Falhas / Engenharia de Caos
+    const chaosBtn = e.target.closest('.chaos-btn');
+    if (chaosBtn) {
+      const serviceId = chaosBtn.getAttribute('data-service-id');
+      const state = chaosBtn.getAttribute('data-chaos-state');
+      try {
+        const res = await authFetch('/api/chaos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ serviceId, state })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Simulador de Caos: Modo ${state} aplicado a "${serviceId}".`, 'warning');
+          if (typeof loadAdminServiceControls === 'function') loadAdminServiceControls();
+          if (typeof loadActiveServices === 'function') loadActiveServices();
+        } else {
+          showToast(data.error || 'Falha ao aplicar injeção de caos.', 'error');
+        }
+      } catch (err) {
+        showToast('Erro de rede ou permissão ao injetar falha.', 'error');
+        console.error('Chaos update failed:', err);
+      }
+      return;
+    }
+  });
+
+  // Scroll highlights for Sidebar in Docs
+  const sections = document.querySelectorAll('.docs-sec');
+  const navItems = document.querySelectorAll('.docs-nav-item');
+
+  window.addEventListener('scroll', () => {
+    let current = '';
+    sections.forEach(section => {
+      const sectionTop = section.offsetTop;
+      if (window.pageYOffset >= (sectionTop - 150)) {
+        current = section.getAttribute('id');
+      }
+    });
+
+    navItems.forEach(item => {
+      item.classList.remove('active');
+      if (item.getAttribute('href') === '#' + current) {
+        item.classList.add('active');
+      }
+    });
+  });
+
+  // Initialize preset on load
+  loadPlaygroundPreset();
+  updateFlowPreview();
+  telemetryChart = new TelemetryChart('telemetry-chart');
+  setupTelemetryListener();
+  initDictionary();
+  initMicroservicesTab();
+
+  // Boot functions
+  loadHomeStats();
+  loadActiveServices();
+  loadDatabaseLogs();
+  checkDbConnection();
+
+  // Auto refresh every 5s
+  setInterval(() => {
+    loadHomeStats();
+    loadActiveServices();
+    checkDbConnection();
+  }, 5000);
+
+  // Inicialização do Sistema de Acesso e Governança
+  initAuthSystem();
+}
+
+// ============================================================================
+// SISTEMA DE AUTENTICAÇÃO, CONTROLO DE ACESSO E CONSOLAS (PORTAL.JS)
+// ============================================================================
+
+let currentAuthToken = localStorage.getItem('inp_auth_token') || null;
+let currentAuthUser = null;
+
+// Intercetor global para injetar automaticamente o cabeçalho Authorization em todos os pedidos do portal
+const _nativeFetch = window.fetch;
+window.fetch = function(url, options = {}) {
+  const opts = options || {};
+  opts.headers = opts.headers || {};
+  if (currentAuthToken) {
+    if (typeof opts.headers.set === 'function') {
+      if (!opts.headers.has('Authorization')) opts.headers.set('Authorization', `Bearer ${currentAuthToken}`);
+    } else if (Array.isArray(opts.headers)) {
+      opts.headers.push(['Authorization', `Bearer ${currentAuthToken}`]);
+    } else {
+      if (!opts.headers['Authorization']) opts.headers['Authorization'] = `Bearer ${currentAuthToken}`;
+    }
+  }
+  return _nativeFetch.call(this, url, opts);
+};
+
+/**
+ * @description Realiza pedidos HTTP autenticados com o token Bearer ativo.
+ * @param {string} url - Endereço do endpoint.
+ * @param {RequestInit} [options={}] - Configuração do fetch.
+ * @returns {Promise<Response>} Promessa com a resposta HTTP.
+ */
+function authFetch(url, options = {}) {
+  return window.fetch(url, options);
+}
+
+/**
+ * @description Abre o modal de autenticação exibindo a aba indicada ('login', 'register' ou 'demo').
+ * @param {string} [tabName='login'] - Nome da aba a ativar no modal.
+ */
+function openAuthModal(tabName = 'login') {
+  // Salvaguarda: O separador demo é exclusivo do Administrador Geral
+  if (tabName === 'demo' && (!currentAuthUser || currentAuthUser.role !== 'ADMIN')) {
+    tabName = 'login';
+  }
+  toggleAuthModal(true, tabName);
+}
+
+/**
+ * @description Abre ou fecha o modal de autenticação, login, cadastro e seleção de perfis.
+ * @param {boolean} show - Verdadeiro para exibir o modal, falso para fechar.
+ * @param {string} [defaultTab='login'] - Aba predefinida a abrir.
+ */
+function toggleAuthModal(show, defaultTab = 'login') {
+  const modal = document.getElementById('auth-switch-modal');
+  if (!modal) return;
+  modal.style.display = show ? 'flex' : 'none';
+  if (show) {
+    if (defaultTab === 'demo' && (!currentAuthUser || currentAuthUser.role !== 'ADMIN')) {
+      defaultTab = 'login';
+    }
+    switchAuthTab(defaultTab);
+  }
+}
+
+/**
+ * @description Alterna entre as abas internas do modal de autenticação (Login, Cadastro e Demonstração).
+ * O acesso aos perfis demo é estritamente condicionado ao papel de Administrador Geral.
+ * @param {string} tabName - Nome da aba ('login', 'register' ou 'demo').
+ */
+function switchAuthTab(tabName) {
+  const isAdmin = currentAuthUser && currentAuthUser.role === 'ADMIN';
+
+  // Salvaguarda: Não-administradores não podem selecionar nem visualizar a aba demo
+  if (tabName === 'demo' && !isAdmin) {
+    tabName = 'login';
+  }
+
+  // Visibilidade estrita do botão da aba demo
+  const tabDemoBtn = document.getElementById('tab-btn-demo');
+  if (tabDemoBtn) {
+    tabDemoBtn.style.display = isAdmin ? 'inline-flex' : 'none';
+  }
+
+  const tabs = ['login', 'register', 'demo'];
+  tabs.forEach(t => {
+    const btn = document.getElementById(`tab-btn-${t}`);
+    const pane = document.getElementById(`auth-pane-${t}`);
+    if (btn) btn.classList.toggle('active', t === tabName);
+    if (pane) pane.classList.toggle('active', t === tabName);
+  });
+
+  // Limpa eventuais mensagens de alerta
+  const loginAlert = document.getElementById('login-alert');
+  const registerAlert = document.getElementById('register-alert');
+  if (loginAlert) {
+    loginAlert.className = 'auth-alert';
+    loginAlert.style.display = 'none';
+    loginAlert.innerText = '';
+  }
+  if (registerAlert) {
+    registerAlert.className = 'auth-alert';
+    registerAlert.style.display = 'none';
+    registerAlert.innerText = '';
+  }
+
+  // Atualiza título do modal
+  const titleEl = document.getElementById('auth-modal-title');
+  if (titleEl) {
+    if (tabName === 'login') titleEl.innerText = 'Iniciar Sessão no Protocolo INP';
+    else if (tabName === 'register') titleEl.innerText = 'Criar Nova Conta no INP';
+    else titleEl.innerText = 'Alternar Perfil de Acesso (RBAC)';
+  }
+}
+
+/**
+ * @description Controla a exibição condicional de campos do formulário de registo consoante o perfil.
+ */
+function handleRegisterRoleChange() {
+  const roleSelect = document.getElementById('reg-role');
+  const companyGroup = document.getElementById('reg-company-group');
+  const dbaGroup = document.getElementById('reg-dba-group');
+  if (!roleSelect) return;
+
+  const role = roleSelect.value;
+  if (companyGroup) {
+    companyGroup.style.display = (role === 'CLIENT_ENTERPRISE') ? 'block' : 'none';
+  }
+  if (dbaGroup) {
+    dbaGroup.style.display = (role === 'DBA') ? 'block' : 'none';
+  }
+}
+
+/**
+ * @description Trata a submissão do formulário de início de sessão (login).
+ * @param {Event} event - Evento de submissão do formulário.
+ */
+async function handlePortalLogin(event) {
+  if (event) event.preventDefault();
+  const emailInput = document.getElementById('login-email');
+  const passwordInput = document.getElementById('login-password');
+  const alertEl = document.getElementById('login-alert');
+  const submitBtn = document.getElementById('btn-submit-login');
+
+  if (!emailInput || !passwordInput || !alertEl) return;
+
+  const email = emailInput.value.trim();
+  const password = passwordInput.value;
+
+  if (!email || !password) {
+    alertEl.className = 'auth-alert error';
+    alertEl.style.display = 'flex';
+    alertEl.innerText = 'Por favor, preencha o email e a palavra-passe.';
+    return;
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span>A autenticar...</span>';
+  }
+
+  try {
+    const res = await _nativeFetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+
+    if (data.success && data.token) {
+      currentAuthToken = data.token;
+      currentAuthUser = data.user;
+      localStorage.setItem('inp_auth_token', data.token);
+      localStorage.setItem('inp_auth_user', JSON.stringify(data.user));
+
+      alertEl.className = 'auth-alert success';
+      alertEl.style.display = 'flex';
+      alertEl.innerText = 'Sessão iniciada com sucesso!';
+
+      setTimeout(() => {
+        toggleAuthModal(false);
+        renderCurrentProfile();
+        updateNavTabsVisibility();
+        emailInput.value = '';
+        passwordInput.value = '';
+      }, 400);
+    } else {
+      alertEl.className = 'auth-alert error';
+      alertEl.style.display = 'flex';
+      alertEl.innerText = data.error || 'Credenciais inválidas. Verifique os dados introduzidos.';
+    }
+  } catch (err) {
+    alertEl.className = 'auth-alert error';
+    alertEl.style.display = 'flex';
+    alertEl.innerText = 'Erro de rede ou servidor ao tentar iniciar sessão: ' + err.message;
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = '<span>Iniciar Sessão</span> <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
+    }
+  }
+}
+
+/**
+ * @description Trata a submissão do formulário de registo de novo utilizador (cadastro).
+ * @param {Event} event - Evento de submissão do formulário.
+ */
+async function handlePortalRegister(event) {
+  if (event) event.preventDefault();
+  const nameInput = document.getElementById('reg-name');
+  const emailInput = document.getElementById('reg-email');
+  const passwordInput = document.getElementById('reg-password');
+  const confirmInput = document.getElementById('reg-password-confirm');
+  const roleSelect = document.getElementById('reg-role');
+  const companyInput = document.getElementById('reg-company');
+  const dbaSelect = document.getElementById('reg-dba-level');
+  const alertEl = document.getElementById('register-alert');
+  const submitBtn = document.getElementById('btn-submit-register');
+
+  if (!nameInput || !emailInput || !passwordInput || !alertEl) return;
+
+  const name = nameInput.value.trim();
+  const email = emailInput.value.trim();
+  const password = passwordInput.value;
+  const confirmPassword = confirmInput ? confirmInput.value : '';
+  const role = roleSelect ? roleSelect.value : 'CLIENT_INDIVIDUAL';
+  const company = companyInput ? companyInput.value.trim() : '';
+  const dbaLevel = dbaSelect ? parseInt(dbaSelect.value, 10) : 1;
+
+  if (!name || !email || !password) {
+    alertEl.className = 'auth-alert error';
+    alertEl.style.display = 'flex';
+    alertEl.innerText = 'Preencha todos os campos obrigatórios.';
+    return;
+  }
+
+  if (password.length < 6) {
+    alertEl.className = 'auth-alert error';
+    alertEl.style.display = 'flex';
+    alertEl.innerText = 'A palavra-passe deve possuir pelo menos 6 caracteres.';
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    alertEl.className = 'auth-alert error';
+    alertEl.style.display = 'flex';
+    alertEl.innerText = 'A confirmação da palavra-passe não coincide.';
+    return;
+  }
+
+  if (role === 'CLIENT_ENTERPRISE' && !company) {
+    alertEl.className = 'auth-alert error';
+    alertEl.style.display = 'flex';
+    alertEl.innerText = 'Por favor, indique o nome da empresa ou organização.';
+    return;
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span>A registar utilizador...</span>';
+  }
+
+  try {
+    const payload = {
+      name,
+      email,
+      password,
+      role,
+      company: role === 'CLIENT_ENTERPRISE' ? company : undefined,
+      dbaLevel: role === 'DBA' ? dbaLevel : undefined
+    };
+
+    const res = await _nativeFetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+
+    if (data.success && data.token) {
+      currentAuthToken = data.token;
+      currentAuthUser = data.user;
+      localStorage.setItem('inp_auth_token', data.token);
+      localStorage.setItem('inp_auth_user', JSON.stringify(data.user));
+
+      alertEl.className = 'auth-alert success';
+      alertEl.style.display = 'flex';
+      alertEl.innerText = 'Conta criada com sucesso! A iniciar sessão...';
+
+      setTimeout(() => {
+        toggleAuthModal(false);
+        renderCurrentProfile();
+        updateNavTabsVisibility();
+        nameInput.value = '';
+        emailInput.value = '';
+        passwordInput.value = '';
+        if (confirmInput) confirmInput.value = '';
+        if (companyInput) companyInput.value = '';
+      }, 500);
+    } else {
+      alertEl.className = 'auth-alert error';
+      alertEl.style.display = 'flex';
+      alertEl.innerText = data.error || 'Falha ao criar conta. Tente novamente.';
+    }
+  } catch (err) {
+    alertEl.className = 'auth-alert error';
+    alertEl.style.display = 'flex';
+    alertEl.innerText = 'Erro de rede ou servidor ao registar: ' + err.message;
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = '<span>Concluir Registo &amp; Iniciar Sessão</span> <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>';
+    }
+  }
+}
+
+/**
+ * @description Termina a sessão ativa do utilizador, limpando o token e retornando ao estado de visitante.
+ */
+function handlePortalLogout() {
+  currentAuthToken = null;
+  currentAuthUser = null;
+  localStorage.removeItem('inp_auth_token');
+  localStorage.removeItem('inp_auth_user');
+
+  renderCurrentProfile();
+  updateNavTabsVisibility();
+
+  // Se o utilizador se encontrava numa aba restrita, redireciona para o Início público
+  const activeTab = document.querySelector('.tab-content.active');
+  if (activeTab && ['tab-governance', 'tab-audit', 'tab-dba', 'tab-client'].includes(activeTab.id)) {
+    switchTab(null, 'tab-home');
+  }
+  if (typeof showToast === 'function') {
+    showToast('Sessão terminada. O portal retornou ao modo visitante seguro.', 'info');
+  }
+}
+
+/**
+ * @description Abre ou fecha o modal de geração de chaves de API.
+ * @param {boolean} show - Verdadeiro para exibir.
+ */
+function toggleApiKeyModal(show) {
+  const modal = document.getElementById('apikey-create-modal');
+  if (modal) {
+    modal.style.display = show ? 'flex' : 'none';
+    const secretBox = document.getElementById('apikey-created-secret-box');
+    if (secretBox) secretBox.style.display = 'none';
+  }
+}
+
+/**
+ * @description Mostra ou esconde o seletor de nível DBA dependendo do papel escolhido no formulário de utilizador.
+ */
+function toggleDbaLevelField() {
+  const roleSelect = document.getElementById('new-user-role');
+  const dbaField = document.getElementById('field-dba-level');
+  if (roleSelect && dbaField) {
+    dbaField.style.display = roleSelect.value === 'DBA' ? 'block' : 'none';
+  }
+}
+
+/**
+ * @description Inicia sessão como um determinado perfil predefinido de teste.
+ * @param {string} email - Email do utilizador.
+ * @param {string} password - Palavra-passe.
+ */
+async function loginAsProfile(email, password) {
+  try {
+    const res = await _nativeFetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if (data.success && data.token) {
+      currentAuthToken = data.token;
+      currentAuthUser = data.user;
+      localStorage.setItem('inp_auth_token', data.token);
+      localStorage.setItem('inp_auth_user', JSON.stringify(data.user));
+      toggleAuthModal(false);
+      renderCurrentProfile();
+      updateNavTabsVisibility();
+    } else {
+      alert('Falha ao autenticar: ' + (data.error || 'Erro desconhecido'));
+    }
+  } catch (err) {
+    alert('Erro de rede ao autenticar: ' + err.message);
+  }
+}
+
+/**
+ * @description Atualiza visualmente o crachá do perfil ativo na barra de navegação.
+ */
+function renderCurrentProfile() {
+  const guestSection = document.getElementById('nav-guest-section');
+  const userSection = document.getElementById('nav-user-section');
+  const demoBtn = document.getElementById('btn-open-auth-modal');
+  const tabDemoBtn = document.getElementById('tab-btn-demo');
+
+  if (!currentAuthUser) {
+    if (guestSection) guestSection.style.display = 'flex';
+    if (userSection) userSection.style.display = 'none';
+    if (demoBtn) demoBtn.style.display = 'none';
+    if (tabDemoBtn) tabDemoBtn.style.display = 'none';
+    return;
+  }
+
+  if (guestSection) guestSection.style.display = 'none';
+  if (userSection) userSection.style.display = 'flex';
+
+  const iconEl = document.getElementById('nav-profile-icon');
+  const nameEl = document.getElementById('nav-profile-name');
+  const tagEl = document.getElementById('nav-profile-tag');
+  const chipEl = document.getElementById('current-profile-chip');
+
+  if (!nameEl || !chipEl) return;
+
+  const roleIcons = {
+    ADMIN: '👑',
+    CLIENT_ENTERPRISE: '🏢',
+    CLIENT_INDIVIDUAL: '💻',
+    AUDITOR: '🔍',
+    DBA: '🗄️',
+    DEVELOPER: '🛠️',
+    SECOPS: '🛡️'
+  };
+
+  const roleClasses = {
+    ADMIN: 'role-admin',
+    CLIENT_ENTERPRISE: 'role-client-enterprise',
+    CLIENT_INDIVIDUAL: 'role-client-individual',
+    AUDITOR: 'role-auditor',
+    DBA: 'role-dba',
+    DEVELOPER: 'role-client-individual',
+    SECOPS: 'role-secops'
+  };
+
+  if (iconEl) iconEl.innerText = roleIcons[currentAuthUser.role] || '👤';
+  nameEl.innerText = currentAuthUser.name.split(' ')[0] + (currentAuthUser.dbaLevel ? ` (N${currentAuthUser.dbaLevel})` : '');
+  if (tagEl) tagEl.innerText = currentAuthUser.role === 'DBA' ? `DBA N${currentAuthUser.dbaLevel || 1}` : currentAuthUser.role;
+
+  chipEl.className = 'profile-chip ' + (roleClasses[currentAuthUser.role] || 'role-admin');
+
+  // Perfis Demo: Visibilidade restrita exclusivamente para o Administrador Geral
+  const isAdmin = currentAuthUser.role === 'ADMIN';
+  if (demoBtn) {
+    demoBtn.style.display = isAdmin ? 'inline-flex' : 'none';
+  }
+  if (tabDemoBtn) {
+    tabDemoBtn.style.display = isAdmin ? 'inline-flex' : 'none';
+  }
+}
+
+/**
+ * @description Regula dinamicamente a visibilidade das abas conforme o papel do utilizador.
+ */
+function updateNavTabsVisibility() {
+  const role = currentAuthUser ? currentAuthUser.role : null;
+  const dbaLevel = (currentAuthUser && currentAuthUser.dbaLevel) ? currentAuthUser.dbaLevel : 1;
+
+  const adminTabs = document.querySelectorAll('.tab-admin-only');
+  const auditorTabs = document.querySelectorAll('.tab-auditor-only');
+  const dbaTabs = document.querySelectorAll('.tab-dba-only');
+  const clientTabs = document.querySelectorAll('.tab-client-only');
+
+  // Visibilidade de botões na barra, menus suspensos e gaveta mobile
+  const setDisplay = (el, show) => {
+    if (!show) {
+      el.style.display = 'none';
+    } else {
+      el.style.display = (el.classList.contains('dropdown-item') || el.classList.contains('mobile-nav-item')) ? 'flex' : 'inline-block';
+    }
+  };
+
+  adminTabs.forEach(el => setDisplay(el, role === 'ADMIN'));
+  auditorTabs.forEach(el => setDisplay(el, role === 'ADMIN' || role === 'AUDITOR' || role === 'SECOPS'));
+  dbaTabs.forEach(el => setDisplay(el, role === 'ADMIN' || role === 'DBA'));
+  clientTabs.forEach(el => setDisplay(el, role === 'ADMIN' || role === 'CLIENT_ENTERPRISE' || role === 'CLIENT_INDIVIDUAL' || role === 'DEVELOPER'));
+
+  // Visibilidade estrita dos controlos de perfis demo (Exclusivo Administrador Geral)
+  const demoBtn = document.getElementById('btn-open-auth-modal');
+  if (demoBtn) {
+    demoBtn.style.display = (role === 'ADMIN') ? 'inline-flex' : 'none';
+  }
+  const tabDemoBtn = document.getElementById('tab-btn-demo');
+  if (tabDemoBtn) {
+    tabDemoBtn.style.display = (role === 'ADMIN') ? 'inline-flex' : 'none';
+  }
+
+  // Visibilidade do Menu Agrupador de Consolas Privadas
+  const hasPrivateAccess = role && ['ADMIN', 'AUDITOR', 'DBA', 'CLIENT_ENTERPRISE', 'CLIENT_INDIVIDUAL', 'SECOPS', 'DEVELOPER'].includes(role);
+  const privateWrappers = document.querySelectorAll('.tab-private-wrapper');
+  privateWrappers.forEach(el => {
+    el.style.display = hasPrivateAccess ? (el.classList.contains('mobile-nav-links') ? 'flex' : 'block') : 'none';
+  });
+
+  const privateLabel = document.getElementById('private-hub-label');
+  if (privateLabel) {
+    if (role === 'ADMIN') privateLabel.innerText = 'Painel Admin';
+    else if (role === 'AUDITOR' || role === 'SECOPS') privateLabel.innerText = 'Auditoria';
+    else if (role === 'DBA') privateLabel.innerText = `Consola DBA N${dbaLevel}`;
+    else if (role === 'CLIENT_ENTERPRISE' || role === 'CLIENT_INDIVIDUAL') privateLabel.innerText = 'Área do Cliente';
+    else privateLabel.innerText = 'Consola Segura';
+  }
+
+  // Seções internas na aba DBA
+  const dbaBadgeView = document.getElementById('dba-level-badge-view');
+  if (dbaBadgeView) {
+    if (role === 'ADMIN') {
+      dbaBadgeView.className = 'dba-tier-badge dba-tier-3';
+      dbaBadgeView.innerText = 'Super Administrador (Acesso Pleno)';
+    } else {
+      dbaBadgeView.className = `dba-tier-badge dba-tier-${dbaLevel}`;
+      dbaBadgeView.innerText = `Nível ${dbaLevel} - ${dbaLevel === 1 ? 'Monitorização' : (dbaLevel === 2 ? 'Operacional / DLQ' : 'Manutenção & Sandbox')}`;
+    }
+  }
+
+  const dbaSectionDlq = document.getElementById('dba-section-dlq');
+  const dbaSectionAdv = document.getElementById('dba-section-advanced');
+
+  if (dbaSectionDlq) {
+    dbaSectionDlq.style.display = (role === 'ADMIN' || (role === 'DBA' && dbaLevel >= 2)) ? 'block' : 'none';
+  }
+  if (dbaSectionAdv) {
+    dbaSectionAdv.style.display = (role === 'ADMIN' || (role === 'DBA' && dbaLevel >= 3)) ? 'block' : 'none';
+  }
+
+  // Validação de acesso à aba ativa e recarregamento de dados seguros
+  const activeTab = document.querySelector('.tab-content.active');
+  if (activeTab) {
+    if (activeTab.id === 'tab-governance') {
+      if (role === 'ADMIN') {
+        if (typeof loadUsersList === 'function') loadUsersList();
+        if (typeof loadAdminServiceControls === 'function') loadAdminServiceControls();
+      } else {
+        switchTab(null, 'tab-home');
+      }
+    } else if (activeTab.id === 'tab-audit') {
+      if (role === 'ADMIN' || role === 'AUDITOR' || role === 'SECOPS') {
+        if (typeof loadAuditData === 'function') loadAuditData();
+        if (typeof loadDatabaseLogs === 'function') loadDatabaseLogs();
+      } else {
+        switchTab(null, 'tab-home');
+      }
+    } else if (activeTab.id === 'tab-dba') {
+      if (role === 'ADMIN' || role === 'DBA') {
+        if (typeof loadDbaDashboard === 'function') loadDbaDashboard();
+      } else {
+        switchTab(null, 'tab-home');
+      }
+    } else if (activeTab.id === 'tab-client') {
+      if (role === 'ADMIN' || role === 'CLIENT_ENTERPRISE' || role === 'CLIENT_INDIVIDUAL' || role === 'DEVELOPER') {
+        if (typeof loadClientDashboard === 'function') loadClientDashboard();
+        if (typeof loadClientExecutions === 'function') loadClientExecutions();
+      } else {
+        switchTab(null, 'tab-home');
+      }
+    }
+  }
+}
+
+/**
+ * @description Carrega os utilizadores cadastrados no sistema (Admin).
+ */
+async function loadUsersList() {
+  try {
+    const res = await authFetch('/api/auth/users');
+    const data = await res.json();
+    const tbody = document.getElementById('users-tbody');
+    if (!tbody) return;
+
+    if (!data.success || !data.users || data.users.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Nenhum utilizador encontrado.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.users.map(u => `
+      <tr>
+        <td><strong>${u.name}</strong>${u.company ? `<br><small style="color: var(--text-muted);">${u.company}</small>` : ''}</td>
+        <td><code>${u.email}</code></td>
+        <td><span class="badge-tag">${u.role}</span></td>
+        <td>${u.dbaLevel ? `<span class="dba-tier-badge dba-tier-${u.dbaLevel}">Nível ${u.dbaLevel}</span>` : '-'}</td>
+        <td>${u.quotaUsed} / ${u.quotaLimit}</td>
+        <td><span style="color: ${u.active ? 'var(--emerald)' : 'var(--error)'}; font-weight: 700;">${u.active ? '● Ativo' : '○ Inativo'}</span></td>
+        <td>
+          <button class="btn-outline" style="padding: 3px 8px; font-size: 11px; border-radius: 4px;" onclick="toggleUserStatus('${u.id}')">
+            ${u.active ? 'Desativar' : 'Ativar'}
+          </button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    console.error('Erro ao carregar lista de utilizadores:', err);
+  }
+}
+
+/**
+ * @description Alterna o estado ativo de um utilizador.
+ * @param {string} userId - Identificador UUID do utilizador.
+ */
+async function toggleUserStatus(userId) {
+  try {
+    const res = await authFetch(`/api/auth/users/${userId}/toggle`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      loadUsersList();
+    } else {
+      alert('Erro: ' + data.error);
+    }
+  } catch (err) {
+    alert('Erro de conexão: ' + err.message);
+  }
+}
+
+/**
+ * @description Carrega métricas e registos de auditoria forense (Auditor & Admin).
+ */
+async function loadAuditData() {
+  try {
+    const actionFilter = (document.getElementById('audit-filter-action')?.value || '');
+    const url = actionFilter ? `/api/audit/logs?action=${encodeURIComponent(actionFilter)}` : '/api/audit/logs';
+
+    const [logsRes, summaryRes] = await Promise.all([
+      authFetch(url),
+      authFetch('/api/audit/summary')
+    ]);
+
+    const logsData = await logsRes.json();
+    const summaryData = await summaryRes.json();
+
+    if (summaryData.success && summaryData.summary) {
+      const s = summaryData.summary;
+      const totalEl = document.getElementById('audit-stat-total');
+      const deniedEl = document.getElementById('audit-stat-denied');
+      const dbaEl = document.getElementById('audit-stat-dba');
+      const scoreEl = document.getElementById('audit-stat-score');
+
+      if (totalEl) totalEl.innerText = s.totalLogs;
+      if (deniedEl) deniedEl.innerText = s.deniedEvents;
+      if (dbaEl) dbaEl.innerText = s.dbaEvents;
+      if (scoreEl) scoreEl.innerText = `${s.complianceScore}%`;
+    }
+
+    const tbody = document.getElementById('audit-tbody');
+    if (!tbody) return;
+
+    if (!logsData.success || !logsData.logs || logsData.logs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Nenhum registo de auditoria disponível.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = logsData.logs.map(l => {
+      const statusColor = l.status === 'SUCCESS' ? 'var(--emerald)' : (l.status === 'DENIED' ? 'var(--error)' : 'var(--warning)');
+      const dateStr = new Date(l.createdAt).toLocaleTimeString() + ' ' + new Date(l.createdAt).toLocaleDateString();
+      return `
+        <tr>
+          <td style="font-size: 11.5px; color: var(--text-muted);">${dateStr}</td>
+          <td><strong style="color: #c4b5fd;">${l.action}</strong></td>
+          <td>${l.userEmail || 'Sistema'}<br><small class="badge-tag">${l.userRole || 'ANONYMOUS'}</small></td>
+          <td><code>${l.resource}</code></td>
+          <td><span style="color: ${statusColor}; font-weight: 700;">${l.status}</span></td>
+          <td style="font-size: 11px; color: var(--text-muted);">${l.ipAddress || '-'}<br><code>${l.correlationId ? l.correlationId.substring(0, 12) + '...' : '-'}</code></td>
+        </tr>
+      `;
+    }).join('');
+  } catch (err) {
+    console.error('Erro ao carregar dados de auditoria:', err);
+  }
+}
+
+/**
+ * @description Exporta os logs de auditoria carregados em formato JSON.
+ */
+async function exportAuditReport() {
+  try {
+    const res = await authFetch('/api/audit/logs?limit=500');
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+
+    const blob = new Blob([JSON.stringify(data.logs, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `inp-audit-report-${new Date().toISOString().substring(0,10)}.json`;
+    link.click();
+  } catch (err) {
+    alert('Erro ao exportar auditoria: ' + err.message);
+  }
+}
+
+/**
+ * @description Carrega o painel da Consola DBA com métricas e ocupação de tabelas.
+ */
+async function loadDbaDashboard() {
+  try {
+    const res = await authFetch('/api/dba/overview');
+    const data = await res.json();
+    if (!data.success || !data.overview) return;
+
+    const ov = data.overview;
+    const connsEl = document.getElementById('dba-stat-conns');
+    const cacheEl = document.getElementById('dba-stat-cache');
+    const dlqEl = document.getElementById('dba-stat-dlq');
+    const pendingEl = document.getElementById('dba-stat-pending');
+
+    if (connsEl) connsEl.innerText = ov.activeConnections;
+    if (cacheEl) cacheEl.innerText = `${ov.cacheHitRatio}%`;
+    if (dlqEl) dlqEl.innerText = ov.dlqCount;
+    if (pendingEl) pendingEl.innerText = ov.pendingJobsCount;
+
+    const tbody = document.getElementById('dba-tables-tbody');
+    if (tbody && ov.tables) {
+      tbody.innerHTML = ov.tables.map(t => `
+        <tr>
+          <td><code>${t.tableName}</code></td>
+          <td><strong>${t.rowCount.toLocaleString()}</strong></td>
+          <td style="color: var(--secondary);">${t.totalSize}</td>
+          <td>
+            <button class="btn-outline" style="padding: 2px 8px; font-size: 11px;" onclick="document.getElementById('vacuum-target-select').value='${t.tableName}'; switchTab(null, 'tab-dba'); document.getElementById('btn-run-vacuum').scrollIntoView({behavior: 'smooth'});">
+              Otimizar (VACUUM)
+            </button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    if (currentAuthUser && (currentAuthUser.role === 'ADMIN' || (currentAuthUser.role === 'DBA' && currentAuthUser.dbaLevel >= 2))) {
+      loadDlqItems();
+    }
+  } catch (err) {
+    console.error('Erro ao carregar telemetria DBA:', err);
+  }
+}
+
+/**
+ * @description Lista os itens da Dead Letter Queue na Consola DBA.
+ */
+async function loadDlqItems() {
+  try {
+    const res = await authFetch('/api/dba/dlq');
+    const data = await res.json();
+    const tbody = document.getElementById('dba-dlq-tbody');
+    if (!tbody) return;
+
+    if (!data.success || !data.items || data.items.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--emerald);">✔ Dead Letter Queue vazia. Nenhuma mensagem retida com falha.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.items.map(item => `
+      <tr>
+        <td><code>${item.id.substring(0, 8)}...</code></td>
+        <td style="font-size: 11.5px; color: var(--text-muted);">${new Date(item.failedAt).toLocaleTimeString()}</td>
+        <td><span class="badge-tag">${item.taskType}</span></td>
+        <td style="color: var(--error); font-size: 12px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.errorMessage}">${item.errorMessage}</td>
+        <td>
+          <button class="btn-outline" style="border-color: var(--warning); color: #fcd34d; padding: 2px 8px; font-size: 11px;" onclick="retryDlqItem('${item.id}')">
+            Reprocessar ↻
+          </button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    console.error('Erro ao carregar DLQ:', err);
+  }
+}
+
+/**
+ * @description Reprocessa um item da Dead Letter Queue.
+ * @param {string} id - UUID do item DLQ.
+ */
+async function retryDlqItem(id) {
+  try {
+    const res = await authFetch(`/api/dba/dlq/retry/${id}`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      alert('Mensagem reinjetada com sucesso na fila de execução assíncrona.');
+      loadDlqItems();
+      loadDbaDashboard();
+    } else {
+      alert('Falha ao reprocessar: ' + data.error);
+    }
+  } catch (err) {
+    alert('Erro: ' + err.message);
+  }
+}
+
+/**
+ * @description Purga todos os itens retidos na Dead Letter Queue.
+ */
+async function purgeDlq() {
+  if (!confirm('Deseja realmente purgar todas as mensagens da Dead Letter Queue? Esta ação é irreversível.')) return;
+  try {
+    const res = await authFetch('/api/dba/dlq/purge', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      alert(`Purgados ${data.result.deletedCount} itens da Dead Letter Queue com sucesso.`);
+      loadDlqItems();
+      loadDbaDashboard();
+    } else {
+      alert('Erro: ' + data.error);
+    }
+  } catch (err) {
+    alert('Erro: ' + err.message);
+  }
+}
+
+/**
+ * @description Dispara o comando VACUUM ANALYZE na base de dados (DBA Nível 3 / Admin).
+ */
+async function runVacuum() {
+  const targetSelect = document.getElementById('vacuum-target-select');
+  const targetTable = targetSelect ? targetSelect.value : '';
+  const feedbackEl = document.getElementById('vacuum-feedback');
+  if (feedbackEl) feedbackEl.innerText = 'A executar VACUUM ANALYZE... aguarde.';
+
+  try {
+    const res = await authFetch('/api/dba/maintenance/vacuum', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetTable })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (feedbackEl) feedbackEl.innerHTML = `<span style="color: var(--emerald);">✔ ${data.result.message}</span>`;
+      loadDbaDashboard();
+    } else {
+      if (feedbackEl) feedbackEl.innerHTML = `<span style="color: var(--error);">❌ ${data.error}</span>`;
+    }
+  } catch (err) {
+    if (feedbackEl) feedbackEl.innerHTML = `<span style="color: var(--error);">Erro: ${err.message}</span>`;
+  }
+}
+
+/**
+ * @description Executa uma consulta SQL no Sandbox seguro de diagnóstico (DBA Nível 3 / Admin).
+ */
+async function runDiagnosticQuery() {
+  const inputEl = document.getElementById('sql-sandbox-input');
+  const query = inputEl ? inputEl.value.trim() : '';
+  const metricsEl = document.getElementById('sql-sandbox-metrics');
+  const resultEl = document.getElementById('sql-sandbox-result');
+
+  if (!query) {
+    alert('Por favor, digite uma consulta SQL de diagnóstico.');
+    return;
+  }
+
+  if (metricsEl) metricsEl.innerText = 'A executar consulta...';
+  if (resultEl) resultEl.innerHTML = '';
+
+  try {
+    const res = await authFetch('/api/dba/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+    const data = await res.json();
+    if (data.success && data.result) {
+      const { rows, rowCount, durationMs } = data.result;
+      if (metricsEl) metricsEl.innerHTML = `<span style="color: var(--emerald);">✔ ${rowCount} linha(s) retornada(s) em ${durationMs}ms</span>`;
+      
+      if (rows && rows.length > 0) {
+        const cols = Object.keys(rows[0]);
+        resultEl.innerHTML = `
+          <table class="data-table-modern">
+            <thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>
+            <tbody>
+              ${rows.map(r => `<tr>${cols.map(c => `<td>${typeof r[c] === 'object' ? JSON.stringify(r[c]) : r[c]}</td>`).join('')}</tr>`).join('')}
+            </tbody>
+          </table>
+        `;
+      } else {
+        resultEl.innerHTML = '<span style="color: var(--text-muted);">Nenhum registo devolvido.</span>';
+      }
+    } else {
+      if (metricsEl) metricsEl.innerHTML = `<span style="color: var(--error);">❌ ${data.error}</span>`;
+    }
+  } catch (err) {
+    if (metricsEl) metricsEl.innerHTML = `<span style="color: var(--error);">Erro de conexão: ${err.message}</span>`;
+  }
+}
+
+/**
+ * @description Carrega as métricas de quota e chaves de API da Área do Cliente.
+ */
+async function loadClientDashboard() {
+  try {
+    const [meRes, keysRes] = await Promise.all([
+      authFetch('/api/auth/me'),
+      authFetch('/api/auth/api-keys')
+    ]);
+
+    const meData = await meRes.json();
+    const keysData = await keysRes.json();
+
+    if (meData.success && meData.user) {
+      const u = meData.user;
+      currentAuthUser = u;
+      const nameEl = document.getElementById('client-view-name');
+      const emailEl = document.getElementById('client-view-email');
+      const badgeEl = document.getElementById('client-view-role-badge');
+      const quotaLabel = document.getElementById('client-quota-label');
+      const quotaFill = document.getElementById('client-quota-fill');
+
+      if (nameEl) nameEl.innerText = u.name + (u.company ? ` (${u.company})` : '');
+      if (emailEl) emailEl.innerText = u.email;
+      if (badgeEl) badgeEl.innerText = u.role === 'CLIENT_ENTERPRISE' ? 'CLIENTE EMPRESA' : 'CLIENTE INDEPENDENTE';
+      if (quotaLabel) quotaLabel.innerText = `${u.quotaUsed.toLocaleString()} / ${u.quotaLimit.toLocaleString()} intenções`;
+
+      const pct = Math.min(100, Math.round((u.quotaUsed / (u.quotaLimit || 1)) * 100));
+      if (quotaFill) quotaFill.style.width = `${pct}%`;
+    }
+
+    const tbody = document.getElementById('client-apikeys-tbody');
+    if (!tbody) return;
+
+    if (!keysData.success || !keysData.apiKeys || keysData.apiKeys.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Nenhuma chave de API ativa. Gere uma nova chave para começar.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = keysData.apiKeys.map(k => `
+      <tr>
+        <td><strong>${k.name}</strong></td>
+        <td><code>${k.keyPrefix}</code></td>
+        <td><small class="badge-tag">${k.permissions.length} permissões</small></td>
+        <td style="font-size: 11.5px; color: var(--text-muted);">${new Date(k.createdAt).toLocaleDateString()}</td>
+        <td style="font-size: 11.5px; color: var(--text-muted);">${k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleDateString() : 'Nunca'}</td>
+        <td>
+          <button class="btn-outline" style="border-color: var(--error); color: var(--error); padding: 2px 8px; font-size: 11px;" onclick="revokeApiKey('${k.id}')">
+            Revogar
+          </button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    console.error('Erro ao carregar Área do Cliente:', err);
+  }
+}
+
+/**
+ * @description Submete a criação de uma nova chave de API para o cliente ativo.
+ */
+async function submitCreateApiKey() {
+  const nameInput = document.getElementById('apikey-input-name');
+  const daysInput = document.getElementById('apikey-input-days');
+  const name = nameInput ? nameInput.value.trim() : '';
+  const days = daysInput ? parseInt(daysInput.value, 10) : 90;
+
+  if (!name) {
+    alert('Por favor, forneça um nome para a chave de API.');
+    return;
+  }
+
+  try {
+    const res = await authFetch('/api/auth/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, expiresInDays: days })
+    });
+    const data = await res.json();
+    if (data.success) {
+      const secretBox = document.getElementById('apikey-created-secret-box');
+      const secretText = document.getElementById('apikey-secret-text');
+      if (secretBox && secretText) {
+        secretText.innerText = data.secretKey;
+        secretBox.style.display = 'block';
+      }
+      loadClientDashboard();
+    } else {
+      alert('Falha ao gerar chave: ' + data.error);
+    }
+  } catch (err) {
+    alert('Erro: ' + err.message);
+  }
+}
+
+/**
+ * @description Revoga uma chave de API.
+ * @param {string} id - Identificador UUID da chave.
+ */
+async function revokeApiKey(id) {
+  if (!confirm('Deseja revogar esta chave de API? Qualquer integração em execução deixará de funcionar imediatamente.')) return;
+  try {
+    const res = await authFetch(`/api/auth/api-keys/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      loadClientDashboard();
+    } else {
+      alert('Falha ao revogar: ' + data.error);
+    }
+  } catch (err) {
+    alert('Erro: ' + err.message);
+  }
+}
+
+/**
+ * @description Trata o clique no crachá do perfil do utilizador na barra de navegação.
+ * Apenas o Administrador Geral é redirecionado para a seleção e alternância de perfis demo.
+ */
+function handleProfileChipClick() {
+  if (currentAuthUser && currentAuthUser.role === 'ADMIN') {
+    openAuthModal('demo');
+  } else if (currentAuthUser) {
+    if (typeof showToast === 'function') {
+      showToast(`Sessão autenticada: ${currentAuthUser.name} (${currentAuthUser.role})`, 'info');
+    }
+  } else {
+    openAuthModal('login');
+  }
+}
+window.handleProfileChipClick = handleProfileChipClick;
+
+/**
+ * @description Inicializa o sistema de autenticação no arranque do frontend.
+ */
+async function initAuthSystem() {
+  document.getElementById('btn-open-auth-modal')?.addEventListener('click', () => {
+    if (currentAuthUser && currentAuthUser.role === 'ADMIN') {
+      toggleAuthModal(true, 'demo');
+    }
+  });
+  document.getElementById('current-profile-chip')?.addEventListener('click', () => handleProfileChipClick());
+  document.getElementById('btn-toggle-create-user')?.addEventListener('click', () => {
+    const card = document.getElementById('create-user-form-card');
+    if (card) card.style.display = card.style.display === 'none' ? 'block' : 'none';
+  });
+
+  document.getElementById('btn-save-new-user')?.addEventListener('click', async () => {
+    const name = document.getElementById('new-user-name')?.value.trim();
+    const email = document.getElementById('new-user-email')?.value.trim();
+    const password = document.getElementById('new-user-pass')?.value;
+    const role = document.getElementById('new-user-role')?.value;
+    const dbaLevel = parseInt(document.getElementById('new-user-dba-level')?.value || '1', 10);
+    const company = document.getElementById('new-user-company')?.value.trim();
+    const quotaLimit = parseInt(document.getElementById('new-user-quota')?.value || '1000', 10);
+
+    if (!name || !email || !password) {
+      alert('Preencha os campos obrigatórios.');
+      return;
+    }
+
+    try {
+      const res = await authFetch('/api/auth/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password, role, dbaLevel, company, quotaLimit })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('Utilizador registado com sucesso!');
+        document.getElementById('create-user-form-card').style.display = 'none';
+        loadUsersList();
+      } else {
+        alert('Erro: ' + data.error);
+      }
+    } catch (err) {
+      alert('Erro ao guardar utilizador: ' + err.message);
+    }
+  });
+
+  document.getElementById('btn-export-audit')?.addEventListener('click', exportAuditReport);
+  document.getElementById('btn-purge-dlq')?.addEventListener('click', purgeDlq);
+  document.getElementById('btn-run-vacuum')?.addEventListener('click', runVacuum);
+  document.getElementById('btn-run-sql')?.addEventListener('click', runDiagnosticQuery);
+  document.getElementById('btn-create-apikey-open')?.addEventListener('click', () => toggleApiKeyModal(true));
+  document.getElementById('btn-submit-create-apikey')?.addEventListener('click', submitCreateApiKey);
+
+  // Se já houver token salvo, verificar validade
+  if (currentAuthToken) {
+    try {
+      const res = await authFetch('/api/auth/me');
+      const data = await res.json();
+      if (data.success && data.user) {
+        currentAuthUser = data.user;
+      } else {
+        // Token expirado ou inválido: limpa credenciais locais
+        currentAuthToken = null;
+        currentAuthUser = null;
+        localStorage.removeItem('inp_auth_token');
+        localStorage.removeItem('inp_auth_user');
+      }
+    } catch {
+      currentAuthToken = null;
+      currentAuthUser = null;
+    }
+  }
+
+  renderCurrentProfile();
+  updateNavTabsVisibility();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}

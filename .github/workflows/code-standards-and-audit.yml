@@ -1,0 +1,31 @@
+name: Validação de Normas e Auditoria de Código
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  audit-and-standards:
+    name: Verificação Estrita de Documentação e Auditoria
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obter Código-Fonte
+        uses: actions/checkout@v3
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Instalar Dependências
+        run: npm ci
+
+      - name: Validar Normas de Documentação e Auditoria (CODING_STANDARDS.md)
+        run: node scripts/enforce-standards.js
+
+      - name: Compilação TypeScript Estrita
+        run: npm run build

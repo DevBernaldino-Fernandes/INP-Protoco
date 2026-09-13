@@ -1,0 +1,100 @@
+================================================================================
+MANUAL 3: ESQUEMA E ARQUITETURA PROFISSIONAL DO INP PROTOCOL
+Visão Técnica Detalhada e Fluxos do Sistema
+================================================================================
+
+O INP Protocol (Intent Network Protocol) substitui integrações ponto a ponto
+frágeis por uma malha distribuída orientada a intenções.
+
+--------------------------------------------------------------------------------
+1. DIAGRAMA DA ARQUITETURA DO SISTEMA
+--------------------------------------------------------------------------------
+
++-----------------------------------------------------------------------------+
+|                            CAMADA DE ENTRADA                                |
+|  - Aplicações Web / Mobile        - Agentes de IA / LLMs (GPT, Gemini, Claude)|
+|  - Sistemas ERP Corporativos      - APIs de Empresas Parceiras              |
++-----------------------------------------------------------------------------+
+                                       |
+                                       | HTTP POST /api/intent
+                                       v
++-----------------------------------------------------------------------------+
+|                       MOTOR CENTRAL INP (Porta 3000)                        |
+|                                                                             |
+|  [ 1. IntentParser ]                                                        |
+|      Converte Linguagem Natural em Árvore Sintática (AST da DSL)           |
+|                                                                             |
+|  [ 2. Camada de Segurança RBAC ]                                            |
+|      Valida permissões granulares por capacidade (ex: payments.write)        |
+|                                                                             |
+|  [ 3. Validador de Contratos (AJV / JSON Schema) ]                          |
+|      Impede que dados corrompidos ou negativos cheguem aos microsserviços  |
+|                                                                             |
+|  [ 4. Execution Engine (DAG & Context Flow) ]                               |
+|      Orquestra os passos de execução e passa dados cumulativos adiante      |
+|                                                                             |
+|  [ 5. Saga Orchestrator (Auto-Rollback & Compensação) ]                      |
+|      Se um passo falhar, desfaz todos os passos anteriores na ordem reversa |
+|                                                                             |
+|  [ 6. Camada de Persistência (PostgreSQL + Transactional Outbox) ]          |
+|      Garante auditoria, logs e recuperação após reinicialização             |
++-----------------------------------------------------------------------------+
+            |                  |                  |                  |
+            | :3001            | :3002            | :3003            | :3004
+            v                  v                  v                  v
+     +--------------+   +--------------+   +--------------+   +--------------+
+     |   ESTOQUE    |   |  PAGAMENTOS  |   |  LOGÍSTICA   |   | NOTIFICAÇÕES |
+     | CHECK STOCK  |   | EXECUTE      |   | CREATE       |   | SEND         |
+     | RESERVE      |   | PAYMENT      |   | SHIPMENT     |   | CONFIRMATION |
+     | RESTORE      |   | REFUND       |   | CANCEL       |   |              |
+     | (Undo Saga)  |   | (Undo Saga)  |   | (Undo Saga)  |   |              |
+     +--------------+   +--------------+   +--------------+   +--------------+
+
+--------------------------------------------------------------------------------
+2. CICLO DE VIDA DE UMA TRANSAÇÃO (PASSO A PASSO)
+--------------------------------------------------------------------------------
+
+FASE 1: ENTRADA E AUTENTICAÇÃO
+- O cliente envia a intenção via DSL ou texto livre.
+- O motor verifica o SecurityContext (identidade do usuário e lista de permissões).
+
+FASE 2: PARSING E COMPILAÇÃO
+- O texto é transformado em uma estrutura de dados de execução (Grafo Dirigido Acíclico - DAG).
+
+FASE 3: VALIDAÇÃO DE CONTRATO
+- Cada microsserviço define suas regras no registro (ex: "o valor do pagamento deve ser >= 1.00").
+- Se o payload contiver um valor negativo, o motor barra a requisição IMEDIATAMENTE antes de
+  disparar qualquer requisição de rede, protegendo o microsserviço.
+
+FASE 4: EXECUÇÃO DOS PASSOS
+- O motor invoca o serviço de Estoque (:3001) para verificar e reservar o produto.
+- Ao ter sucesso, o motor anota no diário transacional (Saga) a ação de compensação: "RESTORE STOCK".
+- O motor invoca o serviço de Pagamentos (:3002) para cobrar o cartão.
+- Ao ter sucesso, o motor anota a compensação: "REFUND PAYMENT".
+- O motor invoca o serviço de Logística (:3003) para gerar a etiqueta de frete.
+
+FASE 5: SAGA ROLLBACK (CASO OCORRA FALHA)
+- Se o serviço de Logística falhar (por exemplo, queda de conexão ou erro 500 do transportador):
+  1. O motor interrompe o fluxo imediatamente.
+  2. Aciona o Saga Recovery Manager.
+  3. Executa a compensação "REFUND PAYMENT" na porta 3002 (o cliente recebe o estorno do cartão).
+  4. Executa a compensação "RESTORE STOCK" na porta 3001 (o produto retorna ao estoque da loja).
+  5. Conclusão: NENHUM centavo é perdido e NENHUM item fica preso em inventário!
+
+FASE 6: FINALIZAÇÃO
+- Se todos os passos forem concluídos com sucesso, o status final é gravado como COMPLETED e os
+  dados acumulados (código de rastreio, recibo, id da transação) são entregues ao cliente.
+
+--------------------------------------------------------------------------------
+3. TABELA COMPARATIVA: SISTEMA TRADICIONAL VS. INP PROTOCOL
+--------------------------------------------------------------------------------
+
+CARACTERÍSTICA            | SISTEMA TRADICIONAL (REST)  | INP PROTOCOL
+--------------------------+-----------------------------+-----------------------
+Acoplamento de Código     | Alto (Hardcoded em cada app)| Zero (Orientado a Intenção)
+Falha em Transação Longa  | Exige intervenção manual    | Auto-Rollback (Padrão Saga)
+Compatibilidade com IA    | Baixa (IA alucina payloads) | Nativa (Validação estrita)
+Controle de Segurança     | Por endpoint genérico       | RBAC Granular por Ação
+Adição de Novos Serviços  | Semanas de programação      | Registro dinâmico em 5 min
+Idempotência              | Manual e inconsistente      | Automática com Chaves Únicas
+================================================================================

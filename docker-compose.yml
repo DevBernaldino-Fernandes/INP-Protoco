@@ -26,6 +26,7 @@ services:
       DB_USER: inp
       DB_PASSWORD: inp123
       DB_NAME: inp
+      INP_REGISTRATION_SECRET: inp-super-secret-registration-token-2026
     depends_on:
       postgres:
         condition: service_healthy
@@ -36,6 +37,41 @@ services:
     command: npm run mock-service
     ports:
       - "3001:3001"
+    environment:
+      PORT: 3001
+      GATEWAY_URL: http://inp-server:3000
+      SELF_ENDPOINT: http://mock-payment:3001
+      INP_REGISTRATION_SECRET: inp-super-secret-registration-token-2026
+    depends_on:
+      - inp-server
+    restart: unless-stopped
+
+  mock-inventory:
+    build: .
+    command: npm run mock-inventory
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      GATEWAY_URL: http://inp-server:3000
+      SELF_ENDPOINT: http://mock-inventory:3002
+      INP_REGISTRATION_SECRET: inp-super-secret-registration-token-2026
+    depends_on:
+      - inp-server
+    restart: unless-stopped
+
+  mock-notification:
+    build: .
+    command: npm run mock-notification
+    ports:
+      - "3003:3003"
+    environment:
+      PORT: 3003
+      GATEWAY_URL: http://inp-server:3000
+      SELF_ENDPOINT: http://mock-notification:3003
+      INP_REGISTRATION_SECRET: inp-super-secret-registration-token-2026
+    depends_on:
+      - inp-server
     restart: unless-stopped
 
 volumes:

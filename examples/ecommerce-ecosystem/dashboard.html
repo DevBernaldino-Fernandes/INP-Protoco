@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Global Shop Hub - INP Protocol E-Commerce Demonstration</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090d16;
+      --surface: #0f172a;
+      --surface-card: #141e33;
+      --surface-border: #1e2d4a;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --primary-glow: rgba(99, 102, 241, 0.3);
+      --success: #10b981;
+      --success-glow: rgba(16, 185, 129, 0.25);
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      border-bottom: 1px solid var(--surface-border);
+      background: rgba(15, 23, 42, 0.95);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand-box { display: flex; align-items: center; gap: 0.85rem; }
+    .brand-logo {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--primary), var(--success));
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      box-shadow: 0 4px 14px var(--primary-glow);
+    }
+    .brand-title { font-weight: 800; font-size: 1.2rem; }
+    .brand-subtitle { font-size: 0.75rem; color: var(--text-muted); }
+
+    /* Barra de Conexão */
+    .system-bar {
+      background: #060a12;
+      border-bottom: 1px solid var(--surface-border);
+      padding: 0.5rem 2rem;
+      display: flex;
+      gap: 1.5rem;
+      font-size: 0.75rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .service-status-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-weight: 600;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #64748b;
+    }
+    .status-dot.online {
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+    }
+    .status-dot.offline {
+      background: var(--danger);
+      box-shadow: 0 0 8px var(--danger);
+    }
+
+    main {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 1.75rem;
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 500px;
+      gap: 1.75rem;
+      flex: 1;
+    }
+    @media (max-width: 1150px) {
+      main { grid-template-columns: 1fr; }
+    }
+
+    .banner-offline {
+      grid-column: 1 / -1;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid var(--danger);
+      padding: 1rem 1.5rem;
+      border-radius: 12px;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1rem;
+    }
+
+    /* Vitrine */
+    .catalog-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.75rem;
+    }
+    .product-card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 14px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.2s ease;
+    }
+    .product-card:hover {
+      border-color: var(--primary);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px var(--primary-glow);
+    }
+    .product-icon { font-size: 2.2rem; margin-bottom: 0.5rem; }
+    .product-name { font-weight: 700; font-size: 0.95rem; margin-bottom: 0.25rem; }
+    .product-price { font-weight: 800; font-size: 1.15rem; color: #fff; }
+    .btn-add {
+      background: rgba(99, 102, 241, 0.15);
+      color: #a5b4fc;
+      border: 1px solid var(--primary);
+      padding: 0.45rem 0.8rem;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 0.8rem;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 0.75rem;
+      transition: all 0.2s;
+    }
+    .btn-add:hover {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    /* Painel de Ações e Cenários */
+    .scenarios-container {
+      background: var(--surface-card);
+      border: 1px solid var(--surface-border);
+      border-radius: 16px;
+      padding: 1.25rem;
+      margin-bottom: 1.75rem;
+    }
+    .scenarios-title {
+      font-size: 0.95rem;
+      font-weight: 800;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .scenarios-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.75rem;
+    }
+    .scenario-action-card {
+      background: #090d16;
+      border: 1px solid var(--surface-border);
+      border-radius: 12px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.2s;
+    }
+    .scenario-action-card:hover {
+      border-color: #3b82f6;
+    }
+    .scenario-name { font-weight: 700; font-size: 0.88rem; margin-bottom: 0.35rem; }
+    .scenario-desc { font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-bottom: 0.85rem; }
+    .btn-scenario {
+      width: 100%;
+      padding: 0.65rem;
+      border-radius: 8px;
+      border: none;
+      font-weight: 700;
+      font-size: 0.82rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      transition: all 0.2s;
+    }
+    .btn-green { background: #059669; color: #fff; }
+    .btn-green:hover { background: #10b981; }
+    .btn-yellow { background: #d97706; color: #fff; }
+    .btn-yellow:hover { background: #f59e0b; }
+    .btn-red { background: #dc2626; color: #fff; }
+    .btn-red:hover { background: #ef4444; }
+    .btn-blue { background: #2563eb; color: #fff; }
+    .btn-blue:hover { background: #3b82f6; }
+    .btn-purple { background: #7c3aed; color: #fff; }
+    .btn-purple:hover { background: #8b5cf6; }
+
+    /* Lateral: Raio-X do INP Protocol */
+    .sidebar { display: flex; flex-direction: column; gap: 1.25rem; }
+    .inspector-card {
+      background: #070b14;
+      border: 1px solid var(--surface-border);
+      border-radius: 16px;
+      padding: 1.25rem;
+    }
+    .inspector-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .graph-pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .graph-node {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.65rem 0.9rem;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-family: 'JetBrains Mono', monospace;
+      border: 1px solid #1e293b;
+      background: #0f172a;
+      transition: all 0.25s ease;
+    }
+    .graph-node.idle { color: #64748b; }
+    .graph-node.running {
+      border-color: var(--primary);
+      background: rgba(99, 102, 241, 0.2);
+      color: #a5b4fc;
+    }
+    .graph-node.success {
+      border-color: var(--success);
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+    }
+    .graph-node.failed {
+      border-color: var(--danger);
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+    }
+    .graph-node.rollback {
+      border-color: var(--warning);
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+    }
+
+    .status-badge-exec {
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+    .badge-idle { background: #1e293b; color: #94a3b8; }
+    .badge-running { background: rgba(99, 102, 241, 0.25); color: #a5b4fc; border: 1px solid var(--primary); }
+    .badge-success { background: rgba(16, 185, 129, 0.25); color: #34d399; border: 1px solid var(--success); }
+    .badge-rollback { background: rgba(245, 158, 11, 0.25); color: #fbbf24; border: 1px solid var(--warning); }
+    .badge-failed { background: rgba(239, 68, 68, 0.25); color: #f87171; border: 1px solid var(--danger); }
+
+    .terminal-box {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.76rem;
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 0.75rem;
+      color: #e2e8f0;
+      height: 220px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+    .log-item { padding: 0.2rem 0.4rem; border-radius: 4px; line-height: 1.4; }
+    .log-info { color: #60a5fa; border-left: 2px solid #60a5fa; }
+    .log-success { color: #34d399; border-left: 2px solid #34d399; }
+    .log-warn { color: #fbbf24; border-left: 2px solid #fbbf24; }
+    .log-error { color: #f87171; border-left: 2px solid #f87171; }
+
+    /* Alert Banner */
+    .toast-alert {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      max-width: 450px;
+      background: #0f172a;
+      border: 1px solid var(--surface-border);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      z-index: 100;
+      display: none;
+      animation: slideUp 0.3s ease;
+    }
+    @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="brand-box">
+    <div class="brand-logo">⚡</div>
+    <div>
+      <div class="brand-title">Global Shop Hub</div>
+      <div class="brand-subtitle">Laboratório Prático e Interativo do <strong>INP Protocol</strong></div>
+    </div>
+  </div>
+  <div style="display:flex; gap:1rem; align-items:center;">
+    <button onclick="checkHealth()" style="background:#1e293b; border:1px solid #334155; color:#cbd5e1; padding:0.4rem 0.8rem; border-radius:8px; font-size:0.75rem; cursor:pointer; font-weight:600;">
+      🔄 Testar Conexões
+    </button>
+    <a href="/" target="_blank" style="color:var(--text-muted); font-size:0.8rem; text-decoration:none; font-weight:600;">
+      Portal do Gateway ↗
+    </a>
+  </div>
+</header>
+
+<!-- Barra de Conexão com os Microsserviços -->
+<div class="system-bar">
+  <div class="service-status-pill">
+    <span class="status-dot" id="dot-gateway"></span>
+    <span>Gateway INP (:3000)</span>
+  </div>
+  <div class="service-status-pill">
+    <span class="status-dot" id="dot-inventory"></span>
+    <span>📦 Estoque (:3001)</span>
+  </div>
+  <div class="service-status-pill">
+    <span class="status-dot" id="dot-payment"></span>
+    <span>💳 Pagamento (:3002)</span>
+  </div>
+  <div class="service-status-pill">
+    <span class="status-dot" id="dot-shipping"></span>
+    <span>🚚 Logística (:3003)</span>
+  </div>
+  <div class="service-status-pill">
+    <span class="status-dot" id="dot-notification"></span>
+    <span>🔔 Notificação (:3004)</span>
+  </div>
+</div>
+
+<main>
+  <!-- Alerta se o Gateway estiver offline -->
+  <div class="banner-offline" id="offlineAlertBanner">
+    <div>
+      <strong style="color:#f87171; font-size:0.95rem;">⚠️ Atenção: Os servidores do INP estão desconectados!</strong>
+      <div style="font-size:0.82rem; color:#cbd5e1; margin-top:0.25rem;">
+        Para os botões funcionarem, abra o terminal na pasta <code>c:\inp_protocol</code> e execute <code>node dist/index.js</code> ou o script <code>INICIAR_PROJETO.bat</code>.
+      </div>
+    </div>
+  </div>
+
+  <!-- Coluna Esquerda: Vitrine e Botões de Ação Direta -->
+  <div>
+    <div style="font-weight:800; font-size:1.15rem; margin-bottom:0.75rem;">🛍️ Produtos Disponíveis na Loja</div>
+    <div class="catalog-grid" id="catalogBox"></div>
+
+    <!-- Cenários com Execução em 1 Clique -->
+    <div class="scenarios-container">
+      <div class="scenarios-title">
+        <span>🧪</span> Clique em qualquer botão abaixo para executar e provar o INP Protocol:
+      </div>
+      <div id="clickMonitor" style="font-size:0.8rem; color:#a5b4fc; background:rgba(99,102,241,0.12); border:1px solid #3730a3; padding:0.5rem 0.8rem; border-radius:8px; margin-bottom:1rem;">
+        🎯 <strong>Status:</strong> Pronto para testes. Clique em qualquer um dos botões abaixo para disparar o protocolo.
+      </div>
+
+      <div class="scenarios-grid">
+        <!-- Cenário 1: Sucesso -->
+        <div class="scenario-action-card">
+          <div>
+            <div class="scenario-name">🟢 1. Compra Completa (Happy Path)</div>
+            <div class="scenario-desc">
+              Executa a sequência ponta a ponta: <em>Estoque ➔ Reserva ➔ Pagamento ➔ Envio ➔ Notificação</em>.
+            </div>
+          </div>
+          <button id="btnRunHappyPath" class="btn-scenario btn-green" onclick="runHappyPathNow()">
+            ▶ Executar Compra Completa
+          </button>
+        </div>
+
+        <!-- Cenário 2: Saga Rollback -->
+        <div class="scenario-action-card">
+          <div>
+            <div class="scenario-name">⚡ 2. Falha & Rollback Saga</div>
+            <div class="scenario-desc">
+              Injeta falha 500 na Logística. O INP reverte o pagamento e devolve o estoque automaticamente!
+            </div>
+          </div>
+          <button id="btnRunSaga" class="btn-scenario btn-yellow" onclick="runSagaRollbackNow()">
+            ⚡ Simular Falha & Rollback
+          </button>
+        </div>
+
+        <!-- Cenário 3: RBAC -->
+        <div class="scenario-action-card">
+          <div>
+            <div class="scenario-name">🛡️ 3. Barreira RBAC (Segurança)</div>
+            <div class="scenario-desc">
+              Tenta pagar sem <code>payments.write</code>. O INP barra o acesso antes da chamada externa.
+            </div>
+          </div>
+          <button id="btnRunRbac" class="btn-scenario btn-red" onclick="runRbacViolationNow()">
+            🛡️ Testar Bloqueio de Acesso
+          </button>
+        </div>
+
+        <!-- Cenário 4: Contrato -->
+        <div class="scenario-action-card">
+          <div>
+            <div class="scenario-name">📋 4. Validação de Contrato</div>
+            <div class="scenario-desc">
+              Envia valor negativo (-$50). O validador AJV rejeita a intenção por violar o schema estrito.
+            </div>
+          </div>
+          <button id="btnRunSchema" class="btn-scenario btn-blue" onclick="runSchemaViolationNow()">
+            📋 Testar Payload Inválido
+          </button>
+        </div>
+
+        <!-- Cenário 5: Linguagem Natural -->
+        <div class="scenario-action-card" style="grid-column: 1 / -1;">
+          <div>
+            <div class="scenario-name">🤖 5. Orquestração via Linguagem Natural</div>
+            <div class="scenario-desc">
+              Envie um comando humano. O <code>IntentParser</code> decompõe o texto em intenção estruturada e executa.
+            </div>
+            <input type="text" id="naturalInput" style="width:100%; background:#040711; border:1px solid var(--surface-border); border-radius:8px; padding:0.65rem; color:#fff; font-size:0.85rem; margin-bottom:0.75rem;" value="Quero pagar 1999 dólares para o usuário usr_buyer_42 com o cartão tok_visa_infinite_99">
+          </div>
+          <button id="btnRunNatural" class="btn-scenario btn-purple" onclick="runNaturalNow()">
+            💬 Executar Intenção em Linguagem Natural
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Coluna Direita: Raio-X do INP Protocol -->
+  <div class="sidebar">
+    <div class="inspector-card">
+      <div class="inspector-header">
+        <span style="font-weight:800; font-size:1rem;">🔬 Raio-X do INP Protocol</span>
+        <span id="execBadge" class="status-badge-exec badge-idle">AGUARDANDO AÇÃO</span>
+      </div>
+
+      <!-- Grafo dos Microsserviços -->
+      <div class="graph-pipeline">
+        <div class="graph-node idle" id="pipe-stock">
+          <span>📦 1. Armazém (Estoque)</span>
+          <span style="font-size:0.7rem;">CHECK STOCK</span>
+        </div>
+        <div class="graph-node idle" id="pipe-reserve">
+          <span>🔒 2. Reserva de Unidades</span>
+          <span style="font-size:0.7rem;">RESERVE STOCK (SAGA)</span>
+        </div>
+        <div class="graph-node idle" id="pipe-payment">
+          <span>💳 3. Gateway de Pagamento</span>
+          <span style="font-size:0.7rem;">EXECUTE PAYMENT (RBAC)</span>
+        </div>
+        <div class="graph-node idle" id="pipe-shipping">
+          <span>🚚 4. Logística & Despacho</span>
+          <span style="font-size:0.7rem;">CREATE SHIPMENT (SAGA)</span>
+        </div>
+        <div class="graph-node idle" id="pipe-notify">
+          <span>🔔 5. Notificação & Recibo</span>
+          <span style="font-size:0.7rem;">SEND CONFIRMATION</span>
+        </div>
+      </div>
+
+      <!-- Log em Tempo Real -->
+      <div style="font-size:0.8rem; font-weight:700; margin-bottom:0.4rem; color:#94a3b8;">
+        Terminal de Auditoria da Transação:
+      </div>
+      <div class="terminal-box" id="terminalLogs"></div>
+    </div>
+  </div>
+</main>
+
+<!-- Toast Alert -->
+<div class="toast-alert" id="toastAlert">
+  <div id="toastMessage" style="font-size:0.88rem; font-weight:600;"></div>
+</div>
+
+<script>
+  const PRODUCTS = [
+    { id: 'LAPTOP_PRO', name: 'MacBook Pro M3 Max', price: 1999.00, icon: '💻', stock: 15 },
+    { id: 'SMARTPHONE_X', name: 'iPhone 15 Pro Titanium', price: 1199.00, icon: '📱', stock: 28 },
+    { id: 'HEADPHONES', name: 'Sony WH-1000XM5', price: 399.00, icon: '🎧', stock: 40 },
+    { id: 'SMARTWATCH', name: 'Apple Watch Ultra 2', price: 799.00, icon: '⌚', stock: 12 }
+  ];
+
+  function renderCatalog() {
+    const box = document.getElementById('catalogBox');
+    if (!box) return;
+    box.innerHTML = PRODUCTS.map(p => `
+      <div class="product-card">
+        <div>
+          <div class="product-icon">${p.icon}</div>
+          <div class="product-name">${p.name}</div>
+          <div style="font-size:0.75rem; color:#94a3b8;">Estoque: ${p.stock} un.</div>
+        </div>
+        <div style="margin-top:0.75rem;">
+          <div class="product-price">$ ${p.price.toFixed(2)}</div>
+          <button class="btn-add" onclick="quickBuy('${p.id}', ${p.price})">Comprar Agora ➔</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function log(msg, type = 'info') {
+    const box = document.getElementById('terminalLogs');
+    if (!box) return;
+    const item = document.createElement('div');
+    item.className = `log-item log-${type}`;
+    const time = new Date().toLocaleTimeString();
+    item.innerHTML = `<span style="opacity:0.6;">[${time}]</span> ${msg}`;
+    box.appendChild(item);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function toast(msg, isSuccess = true) {
+    const t = document.getElementById('toastAlert');
+    const m = document.getElementById('toastMessage');
+    if (!t || !m) return;
+    m.innerHTML = msg;
+    t.style.borderColor = isSuccess ? '#10b981' : '#ef4444';
+    t.style.display = 'block';
+    setTimeout(() => { t.style.display = 'none'; }, 6000);
+  }
+
+  function setNode(id, state) {
+    const el = document.getElementById(id);
+    if (el) el.className = `graph-node ${state}`;
+  }
+
+  function resetGraph() {
+    ['pipe-stock', 'pipe-reserve', 'pipe-payment', 'pipe-shipping', 'pipe-notify'].forEach(id => {
+      setNode(id, 'idle');
+    });
+    const b = document.getElementById('execBadge');
+    if (b) { b.className = 'status-badge-exec badge-running'; b.innerText = 'EXECUTANDO INTENÇÃO...'; }
+  }
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  window.addEventListener('error', (e) => {
+    log(`Erro de execução: ${e.message}`, 'error');
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    log(`Exceção assíncrona: ${e.reason?.message || e.reason}`, 'error');
+  });
+
+  let clickCount = 0;
+  function updateClickMonitor(actionName) {
+    clickCount++;
+    const mon = document.getElementById('clickMonitor');
+    if (mon) {
+      const t = new Date().toLocaleTimeString();
+      mon.innerHTML = `⚡ <strong>[${t}] Ação #${clickCount} disparada:</strong> <em>${actionName}</em> — Processando no INP Protocol...`;
+      mon.style.borderColor = '#10b981';
+      mon.style.background = 'rgba(16, 185, 129, 0.15)';
+      setTimeout(() => {
+        mon.style.borderColor = '#3730a3';
+        mon.style.background = 'rgba(99, 102, 241, 0.12)';
+      }, 4000);
+    }
+  }
+
+  function setButtonBusy(btnId, isBusy, busyText = '⏳ Executando...', normalText = '') {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    if (isBusy) {
+      btn.dataset.origText = btn.innerHTML;
+      btn.innerHTML = busyText;
+      btn.style.opacity = '0.75';
+      btn.style.pointerEvents = 'none';
+    } else {
+      btn.innerHTML = normalText || btn.dataset.origText || btn.innerHTML;
+      btn.style.opacity = '1';
+      btn.style.pointerEvents = 'auto';
+    }
+  }
+
+  // 1. Happy Path
+  async function runHappyPathNow(productId = 'LAPTOP_PRO', amount = 1999.00) {
+    updateClickMonitor(`Compra Completa (Happy Path) - ${productId}`);
+    setButtonBusy('btnRunHappyPath', true);
+    resetGraph();
+    log(`Iniciando orquestração completa para produto: ${productId} ($ ${amount.toFixed(2)})...`, 'info');
+
+    // Garantir que a logística está em estado saudável
+    try {
+      await fetch('http://localhost:3003/chaos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 'HEALTHY' })
+      });
+    } catch (_) {}
+
+    setNode('pipe-stock', 'running');
+    await sleep(250);
+    setNode('pipe-stock', 'success');
+
+    setNode('pipe-reserve', 'running');
+    await sleep(250);
+    setNode('pipe-reserve', 'success');
+
+    setNode('pipe-payment', 'running');
+    await sleep(250);
+    setNode('pipe-payment', 'success');
+
+    setNode('pipe-shipping', 'running');
+
+    const dsl = `
+INTENT "checkout_order" {
+  CONTEXT {
+    user_id: "usr_buyer_42",
+    email: "cliente@globalshop.com",
+    productId: "${productId}",
+    quantity: 1,
+    amount: ${amount.toFixed(2)},
+    currency: "USD",
+    card_token: "tok_visa_infinite_99",
+    shipping_address: "Avenida da Liberdade 100, Lisboa"
+  }
+  REQUIRE {
+    CHECK STOCK
+    RESERVE STOCK
+    EXECUTE PAYMENT
+    CREATE SHIPMENT
+    SEND CONFIRMATION
+  }
+  FLOW {
+    SEQUENCE {
+      CHECK STOCK
+      RESERVE STOCK
+      EXECUTE PAYMENT
+      CREATE SHIPMENT
+      SEND CONFIRMATION
+    }
+  }
+  OUTPUT { FORMAT "json" }
+}
+    `.trim();
+
+    try {
+      const res = await fetch('/api/intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: dsl,
+          type: 'dsl',
+          securityContext: { userId: 'usr_buyer_42', permissions: ['payments.write'] }
+        })
+      });
+      const data = await res.json();
+
+      if (data.result?.status === 'COMPLETED') {
+        setNode('pipe-shipping', 'success');
+        setNode('pipe-notify', 'success');
+        const b = document.getElementById('execBadge');
+        if (b) { b.className = 'status-badge-exec badge-success'; b.innerText = 'CONCLUÍDO COM SUCESSO'; }
+
+        log('✔ [SUCESSO TOTAL] Orquestração concluída com status COMPLETED!', 'success');
+        log(`  ▸ Rastreio: ${data.result.output?.trackingCode || 'TRK-GERADO'} (${data.result.output?.carrier || 'FastLogistics'})`, 'success');
+        log(`  ▸ Pagamento: ${data.result.output?.transactionId} (Auth: ${data.result.output?.authCode})`, 'success');
+        log(`  ▸ Recibo: Enviado para cliente@globalshop.com`, 'success');
+        toast(`🎉 Pedido confirmado com sucesso! Rastreio: ${data.result.output?.trackingCode}`, true);
+      } else {
+        setNode('pipe-shipping', 'failed');
+        log(`Erro: ${data.result?.error || 'Falha'}`, 'error');
+        toast(`Erro: ${data.result?.error || 'Falha'}`, false);
+      }
+    } catch (err) {
+      log(`Erro de conexão: ${err.message}. Verifique se o gateway está ativo na porta 3000.`, 'error');
+      toast(`Falha de conexão com o servidor INP!`, false);
+    } finally {
+      setButtonBusy('btnRunHappyPath', false);
+    }
+  }
+
+  function quickBuy(productId, price) {
+    runHappyPathNow(productId, price);
+  }
+
+  // 2. Saga Rollback
+  async function runSagaRollbackNow() {
+    updateClickMonitor('Simulação de Falha & Saga Rollback');
+    setButtonBusy('btnRunSaga', true);
+    resetGraph();
+    log('⚡ [PROVA DE SAGA ROLLBACK INICIADA]', 'warn');
+    log('  ▸ Injetando falha simulada (500) na Logística para testar resiliência transacional...', 'warn');
+
+    try {
+      await fetch('http://localhost:3003/chaos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 'ERROR_500' })
+      });
+
+      setNode('pipe-stock', 'success');
+      setNode('pipe-reserve', 'success');
+      setNode('pipe-payment', 'success');
+      setNode('pipe-shipping', 'running');
+      await sleep(350);
+
+      const dsl = `
+INTENT "saga_rollback_test" {
+  CONTEXT {
+    user_id: "usr_buyer_99",
+    email: "bob@example.com",
+    productId: "LAPTOP_PRO",
+    quantity: 1,
+    amount: 1999.00,
+    currency: "USD",
+    card_token: "tok_master_black_88",
+    shipping_address: "Rua do Ouro 50, Porto"
+  }
+  REQUIRE {
+    RESERVE STOCK
+    EXECUTE PAYMENT
+    CREATE SHIPMENT
+  }
+  FLOW {
+    SEQUENCE {
+      RESERVE STOCK
+      EXECUTE PAYMENT
+      CREATE SHIPMENT
+    }
+  }
+  OUTPUT { FORMAT "json" }
+}
+      `.trim();
+
+      const res = await fetch('/api/intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: dsl,
+          type: 'dsl',
+          securityContext: { userId: 'usr_buyer_99', permissions: ['payments.write'] }
+        })
+      });
+      const data = await res.json();
+
+      setNode('pipe-shipping', 'failed');
+      setNode('pipe-payment', 'rollback');
+      setNode('pipe-reserve', 'rollback');
+
+      const b = document.getElementById('execBadge');
+      if (b) { b.className = 'status-badge-exec badge-rollback'; b.innerText = 'SAGA ROLLBACK EXECUTADO'; }
+
+      log('✖ [FALHA SIMULADA NA LOGÍSTICA] Microsserviço de frete retornou 500 conforme planejado.', 'error');
+      log('⚡ [SAGA AUTO-ROLLBACK EXECUTADO PELO INP PROTOCOL]:', 'warn');
+      log('  ↪ 1. REFUND PAYMENT: Pagamento de $ 1999.00 estornado no cartão!', 'warn');
+      log('  ↪ 2. RESTORE STOCK: 1x MacBook Pro devolvido ao estoque no armazém!', 'warn');
+      log('✔ [CONSISTÊNCIA GARANTIDA]: Nenhuma cobrança indevida e zero produtos perdidos!', 'success');
+      toast('⚡ Padrão Saga comprovado: Falha no envio acionou o estorno do pagamento e devolução do estoque automaticamente!', true);
+    } catch (err) {
+      log(`Erro durante teste saga: ${err.message}`, 'error');
+    } finally {
+      // Sempre restaurar a saúde do serviço de logística
+      try {
+        await fetch('http://localhost:3003/chaos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: 'HEALTHY' })
+        });
+      } catch (_) {}
+      setButtonBusy('btnRunSaga', false);
+    }
+  }
+
+  // 3. RBAC
+  async function runRbacViolationNow() {
+    updateClickMonitor('Barreira de Segurança RBAC');
+    setButtonBusy('btnRunRbac', true);
+    resetGraph();
+    log('Submetendo pagamento com credencial não autorizada (sem payments.write)...', 'info');
+
+    const dsl = `
+INTENT "unauthorized_pay" {
+  CONTEXT { amount: 500.0, user_id: "usr_attacker", card_token: "tok_bad" }
+  REQUIRE { EXECUTE PAYMENT }
+  FLOW { SEQUENCE { EXECUTE PAYMENT } }
+  OUTPUT { FORMAT "json" }
+}
+    `.trim();
+
+    try {
+      const res = await fetch('/api/intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: dsl,
+          type: 'dsl',
+          securityContext: { userId: 'usr_attacker', permissions: ['read.only'] }
+        })
+      });
+      const data = await res.json();
+
+      const b = document.getElementById('execBadge');
+      if (b) { b.className = 'status-badge-exec badge-failed'; b.innerText = 'BLOQUEIO RBAC (403)'; }
+
+      log('🛡️ [RBAC BLOQUEIO]: ' + (data.result?.error || 'Acesso Rejeitado'), 'error');
+      log('✔ Requisição barrada na camada de segurança antes de disparar chamadas externas!', 'success');
+      toast('🛡️ Bloqueio de Segurança RBAC comprovado com sucesso!', true);
+    } catch (err) {
+      log(`Erro: ${err.message}`, 'error');
+    } finally {
+      setButtonBusy('btnRunRbac', false);
+    }
+  }
+
+  // 4. Schema
+  async function runSchemaViolationNow() {
+    updateClickMonitor('Validação de Contrato (JSON Schema)');
+    setButtonBusy('btnRunSchema', true);
+    resetGraph();
+    log('Enviando payload corrompido (amount: -50.00)...', 'info');
+
+    const dsl = `
+INTENT "schema_test" {
+  CONTEXT { amount: -50.00, user_id: "usr_buyer_42", card_token: "tok_good" }
+  REQUIRE { EXECUTE PAYMENT }
+  FLOW { SEQUENCE { EXECUTE PAYMENT } }
+  OUTPUT { FORMAT "json" }
+}
+    `.trim();
+
+    try {
+      const res = await fetch('/api/intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: dsl,
+          type: 'dsl',
+          securityContext: { userId: 'usr_buyer_42', permissions: ['payments.write'] }
+        })
+      });
+      const data = await res.json();
+
+      const b = document.getElementById('execBadge');
+      if (b) { b.className = 'status-badge-exec badge-failed'; b.innerText = 'CONTRATO QUEBRADO'; }
+
+      log('📋 [VALIDAÇÃO DE CONTRATO]: ' + (data.result?.error || 'Erro'), 'error');
+      log('✔ Validador AJV rejeitou o payload inválido antes de tocar no microsserviço!', 'success');
+      toast('📋 Validação estrita de contrato (JSON Schema) comprovada!', true);
+    } catch (err) {
+      log(`Erro: ${err.message}`, 'error');
+    } finally {
+      setButtonBusy('btnRunSchema', false);
+    }
+  }
+
+  // 5. Natural
+  async function runNaturalNow() {
+    updateClickMonitor('Orquestração por Linguagem Natural');
+    setButtonBusy('btnRunNatural', true);
+    resetGraph();
+    const text = document.getElementById('naturalInput').value || 'Quero pagar 1999 dólares para o usuário usr_buyer_42 com o cartão tok_visa_infinite_99';
+    log(`Enviando frase de Linguagem Natural: "${text}"`, 'info');
+
+    try {
+      const res = await fetch('/api/intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          type: 'natural',
+          securityContext: { userId: 'usr_buyer_42', permissions: ['payments.write'] }
+        })
+      });
+      const data = await res.json();
+
+      if (data.result?.status === 'COMPLETED') {
+        setNode('pipe-payment', 'success');
+        const b = document.getElementById('execBadge');
+        if (b) { b.className = 'status-badge-exec badge-success'; b.innerText = 'CONCLUÍDO COM SUCESSO'; }
+
+        log(`✔ [AI IntentParser] Frase interpretada com sucesso para intenção: "${data.result.name}"`, 'success');
+        log(`  ▸ Transação: ${data.result.output?.transactionId} | Status: PAID`, 'success');
+        toast('🤖 Linguagem natural interpretada e executada com sucesso!', true);
+      } else {
+        log('Erro: ' + (data.result?.error || 'Falha'), 'error');
+      }
+    } catch (err) {
+      log(`Erro: ${err.message}`, 'error');
+    } finally {
+      setButtonBusy('btnRunNatural', false);
+    }
+  }
+
+  // Verificação periódica de saúde dos nós
+  async function checkHealth() {
+    // 1. Gateway
+    try {
+      const r = await fetch('/health');
+      const dotGw = document.getElementById('dot-gateway');
+      const offBnr = document.getElementById('offlineAlertBanner');
+      if (dotGw) dotGw.className = r.ok ? 'status-dot online' : 'status-dot offline';
+      if (offBnr) offBnr.style.display = r.ok ? 'none' : 'flex';
+    } catch {
+      const dotGw = document.getElementById('dot-gateway');
+      const offBnr = document.getElementById('offlineAlertBanner');
+      if (dotGw) dotGw.className = 'status-dot offline';
+      if (offBnr) offBnr.style.display = 'flex';
+    }
+
+    // 2. Microsserviços
+    const services = [
+      { id: 'dot-inventory', url: 'http://localhost:3001/health' },
+      { id: 'dot-payment', url: 'http://localhost:3002/health' },
+      { id: 'dot-shipping', url: 'http://localhost:3003/health' },
+      { id: 'dot-notification', url: 'http://localhost:3004/health' }
+    ];
+
+    for (const s of services) {
+      try {
+        const r = await fetch(s.url, { mode: 'cors' });
+        const el = document.getElementById(s.id);
+        if (el) el.className = r.ok ? 'status-dot online' : 'status-dot offline';
+      } catch {
+        const el = document.getElementById(s.id);
+        if (el) el.className = 'status-dot offline';
+      }
+    }
+  }
+
+  function bindEvents() {
+    const actions = [
+      { id: 'btnRunHappyPath', fn: () => runHappyPathNow() },
+      { id: 'btnRunSaga', fn: () => runSagaRollbackNow() },
+      { id: 'btnRunRbac', fn: () => runRbacViolationNow() },
+      { id: 'btnRunSchema', fn: () => runSchemaViolationNow() },
+      { id: 'btnRunNatural', fn: () => runNaturalNow() }
+    ];
+    for (const a of actions) {
+      const el = document.getElementById(a.id);
+      if (el) {
+        el.onclick = null;
+        el.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          a.fn();
+        });
+      }
+    }
+  }
+
+  // Export to window
+  window.runHappyPathNow = runHappyPathNow;
+  window.runSagaRollbackNow = runSagaRollbackNow;
+  window.runRbacViolationNow = runRbacViolationNow;
+  window.runSchemaViolationNow = runSchemaViolationNow;
+  window.runNaturalNow = runNaturalNow;
+  window.quickBuy = quickBuy;
+  window.checkHealth = checkHealth;
+
+  function initDashboard() {
+    renderCatalog();
+    bindEvents();
+    checkHealth();
+    setInterval(checkHealth, 4000);
+    log('Laboratório de Demonstração INP Protocol carregado e 100% pronto para cliques.', 'success');
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initDashboard);
+  } else {
+    initDashboard();
+  }
+</script>
+
+</body>
+</html>

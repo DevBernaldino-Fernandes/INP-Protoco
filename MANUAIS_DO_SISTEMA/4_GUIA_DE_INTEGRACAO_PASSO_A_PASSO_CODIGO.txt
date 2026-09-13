@@ -1,0 +1,190 @@
+================================================================================
+MANUAL 4: GUIA DE INTEGRAÇÃO PASSO A PASSO PARA PROGRAMADORES
+O que escrever no seu código, como escrever e o que cada linha faz
+================================================================================
+
+Este manual é voltado para programadores que desejam:
+PARTE A: Conectar seu próprio microsserviço/API ao ecossistema do INP.
+PARTE B: Chamar o INP Protocol de dentro da sua aplicação (cliente).
+
+================================================================================
+PARTE A: CONECTANDO O SEU MICROSSERVIÇO AO INP (PROVEDOR DE SERVIÇO)
+================================================================================
+
+Para o INP enxergar a sua API e poder executar ações nela, você precisa fazer
+duas coisas simples no seu código:
+1. Expor uma rota POST /execute para receber ordens.
+2. Registrar suas capacidades no Gateway (POST /services/register).
+
+Veja o código completo e a explicação linha por linha:
+
+```typescript
+import express from 'express';
+import axios from 'axios';
+
+const app = express();
+app.use(express.json());
+
+// 1. Banco de dados ou memória do seu microsserviço
+const pedidos = new Map();
+
+// 2. ROTA OBRIGATÓRIA: O INP chama esta rota para executar ações
+app.post('/execute', (req, res) => {
+  // O INP envia: verb ("EXECUTE"), target ("PAYMENT"), context (dados)
+  const { verb, target, context } = req.body;
+
+  // Verificamos qual ação foi solicitada
+  if (verb === 'EXECUTE' && target === 'PAYMENT') {
+    const { amount, card_token, user_id } = context;
+
+    console.log(`Processando cobrança de $${amount} para o usuário ${user_id}`);
+
+    // Aqui entra a sua lógica de negócio real (ex: chamar Cielo, Stripe, etc.)
+    const transactionId = "txn_" + Date.now();
+
+    // RETORNO OBRIGATÓRIO: Sempre retorne { success: true, ...seusDados }
+    return res.json({
+      success: true,
+      transactionId: transactionId,
+      status: "PAID",
+      authCode: "AUTH_998877"
+    });
+  }
+
+  // AÇÃO DE COMPENSAÇÃO (O "Desfazer" do Padrão Saga):
+  if (verb === 'REFUND' && target === 'PAYMENT') {
+    const { amount, transactionId } = context;
+    console.log(`Estornando pagamento ${transactionId} no valor de $${amount}`);
+    return res.json({
+      success: true,
+      refunded: true,
+      message: "Valor estornado no cartão com sucesso"
+    });
+  }
+
+  return res.status(400).json({ error: "Ação desconhecida" });
+});
+
+// 3. ROTA DE SAÚDE (HEALTH CHECK)
+app.get('/health', (req, res) => {
+  res.json({ status: "ok", service: "meu-servico-pagamentos" });
+});
+
+// 4. INICIALIZAÇÃO DO SERVIDOR E REGISTRO NO INP
+const PORTA = 4000;
+app.listen(PORTA, async () => {
+  console.log(`Meu serviço rodando na porta ${PORTA}`);
+
+  // REGISTRANDO AS CAPACIDADES NO GATEWAY DO INP:
+  try {
+    await axios.post('http://localhost:3000/services/register', {
+      id: "meu-servico-pagamentos-4000",
+      name: "Gateway de Pagamento da Minha Empresa",
+      endpoint: `http://localhost:${PORTA}`,
+      capabilities: [
+        {
+          verb: "EXECUTE",
+          target: "PAYMENT",
+          // Schema estrito: rejeita automaticamente se o valor for menor que 1.00
+          schema: {
+            type: "object",
+            properties: {
+              amount: { type: "number", minimum: 1.0 },
+              card_token: { type: "string" },
+              user_id: { type: "string" }
+            },
+            required: ["amount", "card_token", "user_id"]
+          },
+          // Ação que desfaz este passo se um passo futuro falhar (Saga):
+          compensation: "REFUND PAYMENT",
+          // Permissão que o usuário deve ter para poder acionar esta ação:
+          requiredPermissions: ["payments.write"]
+        },
+        {
+          verb: "REFUND",
+          target: "PAYMENT",
+          schema: {
+            type: "object",
+            properties: {
+              amount: { type: "number" }
+            },
+            required: ["amount"]
+          },
+          compensation: null,
+          requiredPermissions: ["payments.write"]
+        }
+      ]
+    });
+    console.log("✅ Serviço registrado com sucesso no INP Protocol!");
+  } catch (err) {
+    console.error("Falha ao registrar serviço no INP:", err.message);
+  }
+});
+```
+
+O QUE CADA PARTE DO REGISTRO SIGNIFICA:
+- 'id': Identificador único do seu serviço no ecossistema.
+- 'endpoint': A URL onde o seu serviço atende (ex: http://localhost:4000).
+- 'verb' e 'target': O nome da ação na gramática (ex: EXECUTE PAYMENT, CHECK STOCK).
+- 'schema': O contrato JSON Schema que protege sua API contra dados inválidos.
+- 'compensation': O nome da ação contrária que o motor deve chamar se houver erro (Undo).
+- 'requiredPermissions': Quais papéis de segurança têm direito de acionar esta função.
+
+================================================================================
+PARTE B: COMO UMA APLICAÇÃO CLIENTE DISPARA A INTENÇÃO (CONSUMIDOR)
+================================================================================
+
+Se você tem um frontend em React, um aplicativo Flutter ou um backend em Python
+e quer pedir ao INP para orquestrar tudo:
+
+```javascript
+// Função de checkout no seu frontend ou backend:
+async function realizarCompra() {
+  // 1. Montamos a intenção com os dados da compra
+  const payload = {
+    type: "dsl",
+    text: `
+      INTENT "compra_usuario" {
+        CONTEXT {
+          productId: "LAPTOP_PRO",
+          amount: 1999.00,
+          user_id: "usr_joao_10",
+          card_token: "tok_master_123",
+          email: "joao@empresa.com"
+        }
+        REQUIRE {
+          EXECUTE PAYMENT
+        }
+        FLOW {
+          SEQUENCE {
+            EXECUTE PAYMENT
+          }
+        }
+        OUTPUT { FORMAT "json" }
+      }
+    `,
+    // 2. Passamos o contexto de segurança do usuário logado
+    securityContext: {
+      userId: "usr_joao_10",
+      permissions: ["payments.write"]
+    }
+  };
+
+  // 3. Enviamos para o motor do INP
+  const resposta = await fetch("http://localhost:3000/api/intent", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  const dados = await resposta.json();
+
+  // 4. Tratamos o resultado
+  if (dados.result && dados.result.status === "COMPLETED") {
+    alert("Pagamento aprovado! ID da transação: " + dados.result.output.transactionId);
+  } else {
+    alert("Erro na operação: " + dados.result.error);
+  }
+}
+```
+================================================================================

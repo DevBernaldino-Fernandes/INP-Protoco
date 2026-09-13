@@ -1,6 +1,18 @@
 /**
- * INP Core – orchestrates the entire protocol.
- * Combines parser, registry, matching, execution, and response composer.
+ * @fileoverview Orquestrador Central do Protocolo INP (INPCore)
+ * @module Core/INPCore
+ * @description
+ * Fachada principal que unifica e coordena todos os subsistemas do Intent Network Protocol:
+ * 1. Análise sintática e semântica de intenções (`IntentParser`).
+ * 2. Catálogo e descoberta de microserviços (`CapabilityRegistry`).
+ * 3. Resolução e correspondência inteligente de capacidades (`MatchingEngine`).
+ * 4. Motor de execução resiliente, transacional e com padrões Saga (`ExecutionEngine`).
+ * 5. Compositor e serializador de respostas nos formatos pretendidos (`ResponseComposer`).
+ *
+ * @security Encapsula o contexto de segurança (`SecurityContext`) e garante a validação
+ * prévia da exequibilidade de cada intenção antes de despoletar invocações de rede.
+ * @audit Serve de ponto de entrada unificado para a orquestração do protocolo, viabilizando
+ * auditorias de ponta-a-ponta e assegurando integridade na resposta final devolvida ao consumidor.
  */
 
 import { IntentParser } from './intent-parser';
@@ -10,6 +22,9 @@ import { ExecutionEngine } from './execution-engine';
 import { ResponseComposer } from './response-composer';
 import { ParsedIntent, SecurityContext, INPConfig } from './types';
 
+/**
+ * @description Classe central de coordenação e orquestração do protocolo INP.
+ */
 export class INPCore {
   private parser: IntentParser;
   private registry: CapabilityRegistry;
@@ -18,6 +33,10 @@ export class INPCore {
   private config: INPConfig;
   private securityContext?: SecurityContext;
 
+  /**
+   * @param {Partial<INPConfig>} [config] - Configurações opcionais de inicialização do protocolo.
+   * @param {SecurityContext} [securityContext] - Contexto de segurança contendo permissões e identificador do utilizador.
+   */
   constructor(config?: Partial<INPConfig>, securityContext?: SecurityContext) {
     this.config = {
       enableSecurity: true,
@@ -33,10 +52,42 @@ export class INPCore {
     this.responseComposer = new ResponseComposer();
   }
 
+  /**
+   * @description Devolve a instância ativa do catálogo de capacidades e registo de serviços.
+   * @returns {CapabilityRegistry} Registo de capacidades do protocolo.
+   */
   getRegistry(): CapabilityRegistry {
     return this.registry;
   }
 
+  /**
+   * @description Devolve a instância do analisador de intenções.
+   * @returns {IntentParser} Analisador sintático/semântico.
+   */
+  getParser(): IntentParser {
+    return this.parser;
+  }
+
+  /**
+   * @description Devolve a instância do motor de correspondência e vinculação de capacidades.
+   * @returns {MatchingEngine} Motor de correspondência.
+   */
+  getMatchingEngine(): MatchingEngine {
+    return this.matchingEngine;
+  }
+
+  /**
+   * @description Processa uma intenção a partir de uma cadeia de texto bruto (DSL formal ou linguagem natural).
+   * Conduz o pedido por todas as fases: análise, verificação de satisfatibilidade, correspondência,
+   * orquestração transacional e composição da resposta.
+   *
+   * @param {string} input - Texto declarativo na DSL do INP ou frase em linguagem natural.
+   * @param {boolean} [isNaturalLanguage=false] - Indica se o texto fornecido deve ser processado como linguagem natural.
+   * @returns {Promise<any>} Resposta serializada no formato requerido pela intenção (JSON, XML, Texto ou Evento).
+   * @throws {Error} Se faltarem capacidades obrigatórias ou se a orquestração falhar irrecuperavelmente.
+   * @security Valida permissões e executa através do ExecutionEngine com proteção transacional.
+   * @audit Regista a intenção processada e emite os respetivos eventos na telemetria de auditoria.
+   */
   async processIntent(input: string, isNaturalLanguage = false): Promise<any> {
     let intent: ParsedIntent;
     if (isNaturalLanguage) {
@@ -48,10 +99,10 @@ export class INPCore {
     } else {
       intent = this.parser.parse(input);
     }
-    console.log(`[INP] Parsed intent: ${intent.name}`);
+    console.log(`[INP] Intenção analisada com sucesso: ${intent.name}`);
 
     if (!(await this.matchingEngine.canFulfillIntent(intent))) {
-      throw new Error(`Cannot fulfill intent ${intent.name}: missing required capabilities`);
+      throw new Error(`Não é possível satisfazer a intenção "${intent.name}": faltam capacidades obrigatórias na rede.`);
     }
 
     const serviceMatches = await this.matchingEngine.matchIntent(intent);
@@ -65,9 +116,16 @@ export class INPCore {
     return this.responseComposer.compose(result, intent.output);
   }
 
+  /**
+   * @description Executa uma intenção previamente analisada e estruturada (`ParsedIntent`).
+   *
+   * @param {ParsedIntent} intent - Objeto canónico estruturado da intenção.
+   * @returns {Promise<any>} Resposta final formatada.
+   * @throws {Error} Se a rede não conseguir satisfazer os requisitos da intenção.
+   */
   async processIntentObject(intent: ParsedIntent): Promise<any> {
     if (!(await this.matchingEngine.canFulfillIntent(intent))) {
-      throw new Error(`Cannot fulfill intent ${intent.name}`);
+      throw new Error(`Não é possível satisfazer a intenção "${intent.name}"`);
     }
     const serviceMatches = await this.matchingEngine.matchIntent(intent);
     const normalized = new Map();
