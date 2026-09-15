@@ -17,6 +17,7 @@ Este guia documenta detalhadamente as novas funcionalidades adicionadas ao **Int
 10. [Políticas de Falha Avançadas (Rollback vs Forward Recovery)](#10-políticas-de-falha-avandadas-rollback-vs-forward-recovery)
 11. [AST SafeEvaluator e Rotação de Chaves de Criptografia](#11-ast-safeevaluator-e-rotação-de-chaves-de-criptografia)
 12. [Melhorias de Nível Master: Lock Reap Timeout, DLQ & Webhooks, Chaves de Idempotência](#12-melhorias-de-nível-master-lock-reap-timeout-dlq--webhooks-chaves-de-idempotência)
+13. [Padrão de Design de Capacidades e Convenção de Verbos Canônicos](#13-padrão-de-design-de-capacidades-e-convenção-de-verbos-canônicos)
 
 ---
 
@@ -368,4 +369,41 @@ Para garantir a confiabilidade da orquestração de transações em ambientes de
     }
     ```
     Essa chave é anexada ao cabeçalho HTTP de cada chamada de microsserviço efetuada pelo `CircuitBreaker` no `ExecutionEngine`.
+
+---
+
+## 13. Padrão de Design de Capacidades e Convenção de Verbos Canônicos
+
+Ao criar um novo microsserviço para se integrar à malha do INP Protocol, os desenvolvedores devem seguir estritamente o padrão canônico de nomenclatura e contratos de capacidades.
+
+### A. A Anatomia de uma Capacidade (`Capability`)
+No INP, cada capacidade anunciada por um serviço é modelada com:
+```typescript
+{
+  verb: "EXECUTE",                  // Verbo canônico que governa a semântica
+  target: "PAYMENT",                // Substantivo identificador do recurso/domínio
+  description: "Processa cobrança", // Descrição legível para humanos e LLMs
+  requiredPermissions: ["payments.write"], // Permissões RBAC necessárias
+  inputSchema: { ... },             // Validação JSON Schema de entrada
+  outputSchema: { ... },            // Validação JSON Schema de saída
+  compensateCapability: "REFUND PAYMENT" // Ação inversa para o Padrão Saga
+}
+```
+
+### B. Regras de Ouro na Seleção do Verbo
+1. **Nunca invente verbos proprietários ou personalizados**: Verbos como `DO_SOMETHING`, `BUY`, `PROCESS_ORDER_NOW` quebram a interoperabilidade da rede e impedem que modelos de linguagem (LLMs) resolvam a intenção corretamente. Utilize sempre a combinação de um **Verbo Canônico** com um **Target** descritivo (ex: `EXECUTE PAYMENT`, `CHECK STOCK`, `CREATE SHIPMENT`).
+2. **Separação clara de responsabilidades**:
+   - Para saber se um produto existe: `CHECK STOCK` (rápido, sem reter).
+   - Para reter o produto na compra: `RESERVE STOCK` (com TTL).
+   - Para desfazer a retenção em caso de desistência: `RELEASE STOCK`.
+   - Para salvar o pedido final na base: `STORE ORDER` ou `CREATE ORDER`.
+   - Para cobrar o cliente: `EXECUTE PAYMENT`.
+   - Para devolver o dinheiro caso a entrega falhe: `REFUND PAYMENT`.
+3. **Pares de Compensação Transacional (Saga)**:
+   - `EXECUTE PAYMENT` ➔ `REFUND PAYMENT`
+   - `RESERVE STOCK` ➔ `RELEASE STOCK`
+   - `CREATE SHIPMENT` ➔ `CANCEL SHIPMENT`
+   - `TRANSFER FUNDS` ➔ `TRANSFER FUNDS` (reverso com contas invertidas)
+   - `APPROVE PROPOSAL` ➔ `REJECT PROPOSAL` ou `CANCEL PROPOSAL`
+
 

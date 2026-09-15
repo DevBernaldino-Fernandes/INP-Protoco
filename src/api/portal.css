@@ -5358,11 +5358,18 @@ body.light-theme .footer-engine-badge {
   color: #ffb703;
 }
 
+.dict-type-badge.type-verb {
+  background: rgba(0, 245, 255, 0.15) !important;
+  color: var(--secondary) !important;
+  border: 1px solid rgba(0, 245, 255, 0.3) !important;
+}
+
 @media (max-width: 768px) {
   .footer-status-inner {
     flex-direction: column;
     align-items: flex-start;
   }
 }
+
 
 

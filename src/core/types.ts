@@ -18,6 +18,8 @@ import { v4 as uuidv4 } from 'uuid';
 /**
  * @description Verbos canónicos de intenção reconhecidos pelo motor semântico.
  * Representam as ações semânticas fundamentais executáveis pelos microserviços registados.
+ * Agrupados por domínios funcionais: CRUD, Execução/Processamento, Finanças/Saga,
+ * Segurança/Identidade, Comunicação/Distribuição e Operações de Recursos.
  */
 export type IntentVerb =
   | 'CREATE' | 'READ' | 'UPDATE' | 'DELETE'
@@ -25,7 +27,9 @@ export type IntentVerb =
   | 'TRANSFER' | 'VALIDATE' | 'AUTHENTICATE' | 'AUTHORIZE'
   | 'NOTIFY' | 'SYNC' | 'ROUTE' | 'COMPOSE'
   | 'FETCH' | 'STORE' | 'CALCULATE'
-  | 'REFUND' | 'CANCEL' | 'APPROVE' | 'REJECT';
+  | 'REFUND' | 'CANCEL' | 'APPROVE' | 'REJECT'
+  | 'CHECK' | 'RESERVE' | 'RELEASE' | 'SEND'
+  | 'DISPATCH' | 'PUBLISH' | 'ARCHIVE' | 'AUDIT';
 
 /**
  * @description Palavras-chave de controlo de fluxo no grafo de orquestração.

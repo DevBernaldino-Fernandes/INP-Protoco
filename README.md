@@ -152,6 +152,22 @@ INTENT "[Nome da Intenção]" {
 }
 ```
 
+### 4.1. Catálogo Canônico de Verbos Semânticos (Quando e Como Usar)
+
+No INP Protocol, cada capacidade declarada ou exigida é definida pelo par `[VERBO] [TARGET]`. O **Verbo** governa a semântica de execução, idempotência e compensação transacional em caso de falha (Padrão Saga):
+
+| Categoria | Verbos Canônicos Suportados | Propósito Principal & Quando Usar |
+|---|---|---|
+| **CRUD & Domínio** | `CREATE`, `READ`, `UPDATE`, `DELETE` | Gestão de ciclo de vida de entidades formais. Use `CREATE` para novos objetos duráveis, `READ` para consultas locais por ID, `UPDATE` para mutações controladas e `DELETE` para expurgo definitivo. |
+| **Execução & Operações** | `EXECUTE`, `PROCESS`, `ROUTE`, `COMPOSE` | `EXECUTE` para comandos transacionais atômicos com efeito colateral direto (ex: pagamentos); `PROCESS` para lotes/filas contínuas; `ROUTE` para tráfego e nós federados; `COMPOSE` para agregação de saídas. |
+| **Finanças, Estoque & Sagas** | `TRANSFER`, `REFUND`, `CANCEL`, `RESERVE`, `RELEASE` | Operações com compensação distribuída estrita: `TRANSFER` (débito/crédito mútuo), `REFUND` (estorno financeiro pós-falha), `CANCEL` (anulação de fluxo ativo), `RESERVE` (bloqueio temporário com TTL) e `RELEASE` (desbloqueio compensatório de estoque). |
+| **Inspeção, Validação & Regras** | `VALIDATE`, `CHECK`, `CALCULATE`, `ANALYZE` | `VALIDATE` para contratos/JSON Schema; `CHECK` para disponibilidade instantânea sem retenção; `CALCULATE` para fórmulas matemáticas puras; `ANALYZE` para scoring analítico/risco de fraude. |
+| **Segurança & Identidade** | `AUTHENTICATE`, `AUTHORIZE`, `AUDIT` | `AUTHENTICATE` responde *"Quem é você?"* (senhas, JWT, chaves); `AUTHORIZE` responde *"Você tem permissão para isso?"* (RBAC); `AUDIT` valida integridade e conformidade de registros. |
+| **Comunicação & Mensageria** | `NOTIFY`, `SEND`, `PUBLISH`, `SYNC`, `DISPATCH` | `NOTIFY` para alertas leves a clientes (SMS/Push); `SEND` para remessa de payloads e faturas; `PUBLISH` para eventos em barramentos pub/sub (Kafka/RabbitMQ); `SYNC` para conciliação de réplicas; `DISPATCH` para workers assíncronos. |
+| **Workflow & Governança** | `APPROVE`, `REJECT`, `GENERATE`, `STORE`, `ARCHIVE` | `APPROVE` / `REJECT` para deliberações de alçada/crédito; `GENERATE` para artefatos derivados (PDF/tokens); `STORE` para persistência técnica em storage/cache; `ARCHIVE` para guarda fria legal. |
+
+> 📖 **Guia Completo e Detalhado**: Para a especificação exaustiva de cada um dos 31 verbos com comparações e exemplos práticos de código, consulte a [Seção 5 da Especificação da DSL](file:///c:/inp_protocol/docs/02-DSL-SPECIFICATION.md#5-catálogo-canônico-de-verbos-de-intenção-semântica-finalidade-e-guia-de-decisão).
+
 ---
 
 ## 5. Documentação da API REST (Endpoints)

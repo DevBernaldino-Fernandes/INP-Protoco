@@ -58,7 +58,9 @@ Define os parâmetros de entrada e variáveis de estado da intenção. Os tipos 
 
 ### C. `REQUIRE { ... }`
 Declara a lista de capacidades indispensáveis para que a intenção possa ser aceita para execução. Cada linha define um par `VERBO ALVO`.
-- **Verbos Válidos**: `CREATE`, `READ`, `UPDATE`, `DELETE`, `EXECUTE`, `PROCESS`, `ANALYZE`, `GENERATE`, `TRANSFER`, `VALIDATE`, `AUTHENTICATE`, `AUTHORIZE`, `NOTIFY`, `SYNC`, `ROUTE`, `COMPOSE`, `FETCH`, `STORE`, `CALCULATE`, `REFUND`, `CANCEL`, `APPROVE`, `REJECT`.
+- **Verbos Canônicos**: `CREATE`, `READ`, `UPDATE`, `DELETE`, `EXECUTE`, `PROCESS`, `ANALYZE`, `GENERATE`, `TRANSFER`, `VALIDATE`, `AUTHENTICATE`, `AUTHORIZE`, `NOTIFY`, `SYNC`, `ROUTE`, `COMPOSE`, `FETCH`, `STORE`, `CALCULATE`, `REFUND`, `CANCEL`, `APPROVE`, `REJECT`.
+- **Verbos Operacionais & Transacionais**: `CHECK`, `RESERVE`, `RELEASE`, `SEND`, `DISPATCH`, `PUBLISH`, `ARCHIVE`, `AUDIT`.
+- *(Consulte a [Seção 5](#5-catálogo-canônico-de-verbos-de-intenção-semântica-finalidade-e-guia-de-decisão) para a definição minuciosa, regras de quando usar e compensações Saga de cada verbo).*
 - Exemplo:
   ```text
   REQUIRE {
@@ -234,3 +236,604 @@ INTENT "enterprise_order_fulfillment" {
   }
 }
 ```
+
+---
+
+## 5. Catálogo Canônico de Verbos de Intenção (Semântica, Finalidade e Guia de Decisão)
+
+No **Intent Network Protocol (INP)**, os **Verbos de Intenção** constituem os blocos atômicos da semântica operacional da rede. Enquanto o **Alvo (Target)** identifica o recurso ou domínio sobre o qual a ação incide (ex.: `PAYMENT`, `INVENTORY`, `USER`, `REPORT`), o **Verbo** define a natureza fundamental, a política de idempotência, o impacto no estado e o comportamento transacional/Saga da operação.
+
+Esta seção detalha os **23 verbos canônicos originais** e os **8 verbos operacionais e transacionais complementares**, fornecendo diretrizes precisas sobre **para que servem**, **quando usar** e **quando NÃO usar**, além de exemplos práticos de sintaxe DSL e contratos.
+
+---
+
+### Tabela Comparativa Rápida (Matriz de Decisão)
+
+| Verbo | Categoria | Natureza / Efeito | Idempotente? | Compensação Saga Típica | Quando Usar (Resumo) |
+|---|---|---|---|---|---|
+| **CREATE** | CRUD / Domínio | Mutante (Insere novo) | Não (sem chave) | `DELETE` / `CANCEL` | Criar nova entidade durável com ciclo de vida próprio. |
+| **READ** | CRUD / Consulta | Leitura local | Sim | Nenhuma | Consultar entidade local existente por ID ou chave primária. |
+| **UPDATE** | CRUD / Mutação | Mutante (Modifica) | Sim | `UPDATE` (Restaurar) | Alterar atributos de um recurso que já existe. |
+| **DELETE** | CRUD / Destrutivo | Destrutivo (Remove) | Sim | `RESTORE` / `CREATE` | Eliminar fisicamente ou expurgar uma entidade do sistema. |
+| **EXECUTE** | Operação / Comando | Ação crítica imediata | Depende da API | `REFUND` / `CANCEL` | Disparar cobranças, transações bancárias e ordens imperativas. |
+| **PROCESS** | Processamento | Computação / Lote | Sim | DLQ / Reprocessamento | Tratar pipelines contínuos, lotes de dados ou filas assíncronas. |
+| **ANALYZE** | Inteligência / Auditoria | Leitura analítica | Sim | Nenhuma | Extrair diagnósticos, scoring de fraude, riscos ou telemetria. |
+| **GENERATE** | Síntese / Conteúdo | Produção derivativa | Sim | `DELETE` (Limpar) | Gerar relatórios PDF, tokens JWT, QR codes ou chaves temporárias. |
+| **TRANSFER** | Transacional / Finanças | Débito & Crédito atômico | Não (sem chave) | `TRANSFER` (Inverso) | Mover fundos, ativos ou posse entre duas entidades. |
+| **VALIDATE** | Integridade / Regras | Inspeção de conformidade | Sim | Nenhuma | Validar schemas, consistência de dados e regras de negócio. |
+| **AUTHENTICATE** | Segurança / Identidade | Verificação de credenciais | Sim | Nenhuma | Confirmar identidade (*"Quem é você?"* via senha/token). |
+| **AUTHORIZE** | Segurança / RBAC | Checagem de privilégios | Sim | Nenhuma | Confirmar permissão (*"Você pode fazer isso?"* via RBAC). |
+| **NOTIFY** | Comunicação | Alerta unilateral | Sim | `NOTIFY CANCELLATION` | Avisar clientes via SMS, push ou webhook sem travar o fluxo. |
+| **SYNC** | Conectividade | Alinhamento de réplicas | Sim | `SYNC` | Reconciliar discrepâncias entre bancos, nós ou ERPs externos. |
+| **ROUTE** | Infraestrutura | Despacho de tráfego | Sim | Nenhuma | Encaminhar intenções ou pacotes para partições/shards ótimos. |
+| **COMPOSE** | Agregação | Consolidação de saídas | Sim | Nenhuma | Fundir dados de múltiplos serviços num payload único de resposta. |
+| **FETCH** | I/O / Integração | Busca remota em APIs | Sim | Nenhuma | Recuperar dados via rede de serviços remotos ou legados. |
+| **STORE** | Armazenamento | Persistência física bruta | Sim | `DELETE` | Gravar payloads brutos, cache ou estados em banco/storage. |
+| **CALCULATE** | Matemática / Lógica | Computação pura | Sim | Nenhuma | Calcular impostos, taxas, frete ou descontos com fórmulas. |
+| **REFUND** | Finanças / Saga | Estorno financeiro | Sim | Nenhuma (Terminal) | Devolver valores monetários cobrados anteriormente. |
+| **CANCEL** | Ciclo de Vida / Saga | Aborto de processo | Sim | `REOPEN` | Cancelar pedidos, agendamentos ou reservas em aberto. |
+| **APPROVE** | Workflow / Alçada | Transição positiva | Sim | `REJECT` / `CANCEL` | Conceder aprovação humana ou de crédito formal a um pedido. |
+| **REJECT** | Workflow / Alçada | Transição negativa | Sim | Nenhuma (Terminal) | Recusar formalmente proposta, cadastro ou transação suspeita. |
+| **CHECK** | Verificação Rápida | Consulta de disponibilidade | Sim | Nenhuma | Consultar se há estoque ou saldo livre sem reter ou travar. |
+| **RESERVE** | Transacional / Estoque | Retenção temporária (TTL) | Não (sem chave) | `RELEASE` | Garantir estoque ou saldo durante o processo de checkout. |
+| **RELEASE** | Transacional / Saga | Desbloqueio de reserva | Sim | Nenhuma | Devolver à disponibilidade geral itens que haviam sido retidos. |
+| **SEND** | Mensageria Direta | Expedição de payload | Sim | Nenhuma | Enviar e-mail com fatura em anexo, recibo ou SMS direto. |
+| **DISPATCH** | Operacional / Fila | Acionamento de worker | Sim | `CANCEL` | Lançar entrega física ou despachar job para worker assíncrono. |
+| **PUBLISH** | Event-Driven | Emissão em barramento | Sim | Compensating Event | Publicar eventos em Kafka, RabbitMQ ou barramentos pub/sub. |
+| **ARCHIVE** | Retenção / Legal | Armazenamento frio | Sim | `RESTORE` | Mover histórico de transações e auditoria para guarda legal. |
+| **AUDIT** | Segurança / Forense | Verificação de conformidade | Sim | Nenhuma | Validar logs contra adulteração e auditar trilha transacional. |
+
+---
+
+### Detalhamento dos 23 Verbos Canônicos
+
+#### 1. `CREATE`
+- **Definição Semântica**: Cria uma nova entidade permanente no domínio de negócio, atribuindo-lhe um identificador global único e inicializando o seu ciclo de vida.
+- **Para que serve**: Instanciar registros formais de domínio, tais como novas contas de clientes, ordens de serviço, novas faturas ou remessas de frete.
+- **Quando usar**: Sempre que a operação resultar na criação durável de um novo objeto de negócio gerenciado pela aplicação.
+- **Quando NÃO usar**:
+  - Não use para salvar snapshots ou dados brutos em cache (use `STORE`).
+  - Não use para modificação de entidades existentes (use `UPDATE`).
+  - Não use para sintetizar artefatos derivados como PDFs ou tokens efêmeros (use `GENERATE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    CREATE SHIPMENT
+  }
+  FLOW {
+    SEQUENCE {
+      CREATE SHIPMENT
+    }
+  }
+  ```
+- **Comportamento Transacional & Saga**: Operação de escrita mutante. Se o fluxo global for revertido via Saga, a compensação associada típica é a eliminação ou anulação (`DELETE SHIPMENT` ou `CANCEL SHIPMENT`).
+
+---
+
+#### 2. `READ`
+- **Definição Semântica**: Consulta e recupera a representação canônica e os atributos de uma entidade de negócio existente a partir da sua chave primária ou identificador no domínio local.
+- **Para que serve**: Aceder a perfis cadastrais de usuários, consultar o estado atual de um pedido gravado na base de dados ou inspecionar configurações salvas.
+- **Quando usar**: Quando o cliente precisa recuperar dados de um registro do domínio mantido pela infraestrutura local ou microsserviço de persistência.
+- **Quando NÃO usar**:
+  - Não use para chamadas remotas de I/O a fornecedores externos de terceiros (use `FETCH`).
+  - Não use para checagens booleanas rápidas de saldo ou disponibilidade sem retorno de entidade (use `CHECK`).
+  - Não use para inspeção analítica de grandes volumes de dados (use `ANALYZE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    READ USER_PROFILE
+  }
+  ```
+- **Comportamento Transacional & Saga**: Operação de leitura pura (safe & idempotent). Não altera o estado do sistema e não requer ação compensatória em caso de rollback.
+
+---
+
+#### 3. `UPDATE`
+- **Definição Semântica**: Altera o estado, os campos ou os atributos de um recurso existente sem destruir a sua identidade histórica.
+- **Para que serve**: Atualizar o endereço de entrega de um cliente, modificar as preferências de notificação ou atualizar o status operacional de uma tarefa.
+- **Quando usar**: Quando o recurso alvo já existe na base de dados e deve sofrer mutações parciais ou totais nos seus valores.
+- **Quando NÃO usar**:
+  - Não use para criar um recurso se ele não existir (use `CREATE`).
+  - Não use para transições formais de encerramento de negócios como cancelamentos ou estornos (use `CANCEL` ou `REFUND`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    UPDATE SHIPPING_ADDRESS
+  }
+  ```
+- **Comportamento Transacional & Saga**: Mutante. Em fluxos distribuídos com rollback via Saga, o microsserviço deve registrar um snapshot do estado anterior para restaurá-lo via compensação ou registrar evento de reversão.
+
+---
+
+#### 4. `DELETE`
+- **Definição Semântica**: Remove fisicamente ou logicamente uma entidade do sistema de arquivos ou do banco de dados relacional/NoSQL.
+- **Para que serve**: Excluir sessões ativas expiradas, purgar dados sob demanda da LGPD/GDPR ("direito ao esquecimento") ou revogar registros obsoletos.
+- **Quando usar**: Para descartar permanentemente um recurso que não deve mais existir no armazenamento operacional ativo.
+- **Quando NÃO usar**:
+  - Não use para abortar pedidos comerciais que continuam fazendo parte da contabilidade (use `CANCEL`).
+  - Não use para arquivamento histórico e conformidade fiscal (use `ARCHIVE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    DELETE USER_SESSION
+  }
+  ```
+- **Comportamento Transacional & Saga**: Operação destrutiva. A compensação em Saga exige restauração a partir de lixeira lógica (`RESTORE`) ou reinserção via `CREATE`.
+
+---
+
+#### 5. `EXECUTE`
+- **Definição Semântica**: Dispara uma ação operacional atômica, comando imperativo ou transação de negócio de alta criticidade que gera efeitos colaterais substanciais.
+- **Para que serve**: Efetuar cobrança em cartão de crédito, liquidar transação bancária instantânea (PIX/SEPA), acionar fechamento de contrato ou disparar webhook crítico.
+- **Quando usar**: Para transações pontuais e atômicas de alta relevância no ecossistema (especialmente financeiras e operacionais).
+- **Quando NÃO usar**:
+  - Não use para computação contínua de filas ou lotes em segundo plano (use `PROCESS`).
+  - Não use para cálculos matemáticos sem efeito colateral no mundo real (use `CALCULATE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      EXECUTE PAYMENT
+    }
+  }
+  ```
+- **Comportamento Transacional & Saga**: Altamente sensível. Microserviços que expõem `EXECUTE PAYMENT` devem obrigatoriamente cadastrar a capacidade inversa no catálogo (`compensateCapability: "REFUND PAYMENT"`).
+
+---
+
+#### 6. `PROCESS`
+- **Definição Semântica**: Submete um lote de registros, uma fila de mensagens ou um fluxo de eventos a uma sequência ordenada de tratamentos, transformações e validações.
+- **Para que serve**: Processar a folha de pagamento mensal da empresa, drenar lotes de imagens para redimensionamento ou processar fila de transações pendentes.
+- **Quando usar**: Quando a tarefa envolve múltiplos itens em fluxo contínuo ou em lote com múltiplos estágios de tratamento.
+- **Quando NÃO usar**:
+  - Não use para uma única transação atômica individual (use `EXECUTE`).
+  - Não use para checar simples regras de negócio unitárias (use `VALIDATE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    PROCESS BATCH_ORDERS
+  }
+  ```
+- **Comportamento Transacional & Saga**: Lotes processados com falha parcial devem salvar o ponteiro de progresso (`cursor`) e despachar registros defeituosos para Dead Letter Queue (DLQ).
+
+---
+
+#### 7. `ANALYZE`
+- **Definição Semântica**: Aplica modelos estatísticos, regras heurísticas, algoritmos de inteligência artificial ou telemetria para inspecionar um conjunto de dados e extrair conclusões diagnósticas.
+- **Para que serve**: Análise preditiva de score de fraude bancária, detecção de padrões anômalos de tráfego, análise de risco de crédito ou diagnóstico de saúde do cluster.
+- **Quando usar**: Quando a resposta necessita de avaliação interpretativa sem alterar os dados analisados.
+- **Quando NÃO usar**:
+  - Não use para validação estrutural determinística de tipos ou campos (use `VALIDATE`).
+  - Não use para operações aritméticas exatas (use `CALCULATE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    ANALYZE FRAUD_RISK
+  }
+  ```
+- **Comportamento Transacional & Saga**: Operação de leitura analítica idempotente e sem efeitos colaterais. Não exige compensação.
+
+---
+
+#### 8. `GENERATE`
+- **Definição Semântica**: Produz novos artefatos digitais, códigos, relatórios consolidados, documentos derivados ou credenciais computadas a partir de parâmetros de entrada.
+- **Para que serve**: Emitir relatórios financeiros em formato PDF, criar tokens criptográficos de acesso (JWT), gerar comprovantes com QR Code ou gerar chaves de ativação.
+- **Quando usar**: Sempre que a saída da operação for um artefato sintético, derivado e reproduzível.
+- **Quando NÃO usar**:
+  - Não use para persistir entidades de negócio permanentes como clientes ou remessas (use `CREATE`).
+  - Não use para cálculos aritméticos isolados (use `CALCULATE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    GENERATE INVOICE_PDF
+    GENERATE AUTH_TOKEN
+  }
+  ```
+- **Comportamento Transacional & Saga**: Operação normalmente idempotente. Artefatos temporários em disco ou bucket S3 podem ser purgados com `DELETE` se o fluxo for cancelado.
+
+---
+
+#### 9. `TRANSFER`
+- **Definição Semântica**: Movimenta valores, fundos, ativos digitais, inventário ou direitos de propriedade de um nó/conta de origem para um nó/conta de destino de forma balanceada.
+- **Para que serve**: Transferências financeiras entre contas correntes bancárias, transferência de mercadorias entre centros de distribuição, transferência de titularidade de assinaturas.
+- **Quando usar**: Quando a operação envolve uma transação de partida dobrada (débito obrigatório na origem acompanhado de crédito simultâneo no destino).
+- **Quando NÃO usar**:
+  - Não use para pagamentos simples ponto-a-ponto com gateway (use `EXECUTE PAYMENT`).
+  - Não use para sincronização de dados entre réplicas (use `SYNC`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    TRANSFER FUNDS
+  }
+  ```
+- **Comportamento Transacional & Saga**: Transacional rigoroso com chave de idempotência obrigatória. A compensação no padrão Saga é a execução do `TRANSFER` reverso.
+
+---
+
+#### 10. `VALIDATE`
+- **Definição Semântica**: Inspeciona a estrutura, tipagem, restrições e conformidade de um payload de dados contra esquemas formais (JSON Schema) ou regras contratuais.
+- **Para que serve**: Validar formato de e-mail, checar integridade de documentos (CPF, CNPJ, IBAN), validar corpo de requisição contra contrato da API.
+- **Quando usar**: Como etapa de guarda preliminar (*guard rail*) antes de submeter requisições a processamentos que custam recursos.
+- **Quando NÃO usar**:
+  - Não use para confirmar se quem envia a requisição é quem diz ser (use `AUTHENTICATE`).
+  - Não use para checar se o usuário tem privilégios de acesso ao recurso (use `AUTHORIZE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    VALIDATE ORDER_PAYLOAD
+  }
+  ```
+- **Comportamento Transacional & Saga**: Função determinística sem mutação de estado. Não requer compensação.
+
+---
+
+#### 11. `AUTHENTICATE`
+- **Definição Semântica**: Verifica a autenticidade das credenciais de um usuário, sistema ou máquina, validando a sua identidade perante o provedor de segurança.
+- **Para que serve**: Efetuar login com e-mail e senha hash (Argon2), validar tokens JWT recebidos no cabeçalho `Authorization`, conferir assinaturas digitais ou chaves de API.
+- **Quando usar**: Para responder de forma irrefutável à pergunta de segurança: *"Quem é o solicitante?"*.
+- **Quando NÃO usar**:
+  - Não use para verificar se o usuário já identificado tem permissão para uma ação restrita (use `AUTHORIZE`).
+  - Não use para checar se os dados da requisição contêm tipos corretos (use `VALIDATE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    AUTHENTICATE USER
+  }
+  ```
+- **Comportamento Transacional & Saga**: Operação de verificação criptográfica; gera contexto de sessão ou token. Idempotente sob o prisma do domínio de negócio.
+
+---
+
+#### 12. `AUTHORIZE`
+- **Definição Semântica**: Inspeciona a matriz de controle de acesso (RBAC ou ABAC) e determina se a identidade autenticada possui os privilégios necessários para executar uma operação específica sobre um recurso.
+- **Para que serve**: Verificar se um cliente comum possui permissão para emitir estornos (`payments.refund`), checar alçadas financeiras ou validar escopos OAuth2.
+- **Quando usar**: Para responder à pergunta regulatória: *"Este usuário autenticado tem permissão legal para executar esta ação específica neste momento?"*.
+- **Quando NÃO usar**:
+  - Não use para checar senhas ou emitir sessões (use `AUTHENTICATE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    AUTHORIZE PAYMENT_SCOPE
+  }
+  ```
+- **Comportamento Transacional & Saga**: Avaliação booleana em memória/cache de políticas. Rejeições disparam exceções de violação de segurança (`SECURITY_VIOLATION`) abortando o pipeline imediatamente.
+
+---
+
+#### 13. `NOTIFY`
+- **Definição Semântica**: Dispara mensagens de notificação, alertas em tempo real ou avisos de evento para usuários humanos ou serviços terceiros através de canais de comunicação.
+- **Para que serve**: Enviar mensagens de SMS, notificações push em aplicativos móveis, alertas corporativos no Slack/Teams ou webhooks para parceiros comerciais.
+- **Quando usar**: Para informar o destinatário sobre um fato já ocorrido de forma assíncrona e sem bloquear o processamento principal.
+- **Quando NÃO usar**:
+  - Não use para publicar mensagens estruturadas que devam ser processadas transacionalmente por outros nós do cluster (use `PUBLISH`).
+  - Não use para entrega física de mercadorias (use `DISPATCH`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    NOTIFY USER
+    NOTIFY SLACK
+  }
+  FLOW {
+    PARALLEL {
+      NOTIFY USER
+      NOTIFY SLACK
+    }
+  }
+  ```
+- **Comportamento Transacional & Saga**: Operação externa no mundo real (uma notificação lida não pode ser fisicamente desfeita). Se um fluxo for revertido, a estratégia recomendada é disparar uma notificação de retificação (`NOTIFY CANCELLATION`).
+
+---
+
+#### 14. `SYNC`
+- **Definição Semântica**: Executa conciliação bidirecional ou propagação diferencial de dados entre nós distribuídos, réplicas secundárias ou sistemas corporativos legados.
+- **Para que serve**: Sincronizar dados de produtos entre banco local e ERP SAP, replicar catálogo para filiais remotas ou atualizar réplicas de leitura com a réplica mestre.
+- **Quando usar**: Quando duas ou mais bases de dados independentes precisam alcançar consistência de dados em comum.
+- **Quando NÃO usar**:
+  - Não use para gravar um único registro novo no banco relacional local (use `CREATE` ou `STORE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    SYNC INVENTORY_CATALOG
+  }
+  ```
+- **Comportamento Transacional & Saga**: Idempotente. Múltiplas execuções sucessivas de `SYNC` convergem para o mesmo estado sem duplicar dados.
+
+---
+
+#### 15. `ROUTE`
+- **Definição Semântica**: Analisa os metadados de uma requisição e direciona o tráfego ou a intenção para o endpoint físico, microsserviço ou cluster ideal.
+- **Para que serve**: Roteamento baseado em geolocalização do usuário, balanceamento de carga entre zonas de disponibilidade, roteamento por contrato de SLA.
+- **Quando usar**: Em malhas de serviços (service mesh), proxies inteligentes ou nós de federação do protocolo INP.
+- **Quando NÃO usar**:
+  - Não use para estruturar as etapas de negócio de um pedido (use blocos de fluxo como `SEQUENCE` ou `PARALLEL`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    ROUTE INTENT_FEDERATION
+  }
+  ```
+- **Comportamento Transacional & Saga**: Ação de infraestrutura de rede, sem alteração de dados de negócio.
+
+---
+
+#### 16. `COMPOSE`
+- **Definição Semântica**: Reúne fragmentos de dados, respostas parciais e payloads de múltiplos microsserviços e transforma-os num modelo unificado de resposta consolidada.
+- **Para que serve**: Montar o painel analítico agregando dados de vendas, estoque e logística; compor a resposta final de checkout contendo frete, taxa e detalhes de pagamento.
+- **Quando usar**: Na fase final de pipelines orquestrados (após execuções em paralelo) para fornecer um único JSON conciso ao cliente.
+- **Quando NÃO usar**:
+  - Não use para salvar dados de forma permanente no disco (use `STORE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    COMPOSE CHECKOUT_SUMMARY
+  }
+  ```
+- **Comportamento Transacional & Saga**: Transformação lógica em memória. Idempotente e isenta de efeitos colaterais.
+
+---
+
+#### 17. `FETCH`
+- **Definição Semântica**: Realiza consulta ativa e recuperação de informações em serviços remotos, APIs externas de parceiros, camadas de cache ou depósitos físicos.
+- **Para que serve**: Buscar dados de rastreamento nos Correios/FedEx, consultar cotação de moedas em tempo real no Banco Central, recuperar previsão do tempo.
+- **Quando usar**: Sempre que a obtenção da informação envolver I/O de rede externa ou consulta a nós remotos fora do contexto local imediato.
+- **Quando NÃO usar**:
+  - Não use para ler um registro simples da tabela local do seu próprio banco de dados (use `READ`).
+  - Não use para checagem rápida de disponibilidade sem retorno do objeto completo (use `CHECK`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    FETCH INVENTORY
+    FETCH CURRENCY_RATES
+  }
+  ```
+- **Comportamento Transacional & Saga**: Operação segura de leitura (safe read). Não necessita de compensação.
+
+---
+
+#### 18. `STORE`
+- **Definição Semântica**: Grava fisicamente dados brutos, payloads intermediários, snapshots de estado ou artefatos em camadas de persistência (PostgreSQL, Redis, S3).
+- **Para que serve**: Salvar o rascunho de um carrinho de compras, gravar o payload bruto retornado por um fornecedor externo ou persistir chave-valor em cache.
+- **Quando usar**: Quando o objetivo for a persistência técnica pura e armazenamento de dados em mídias físicas ou caches.
+- **Quando NÃO usar**:
+  - Não use quando estiver criando uma entidade formal de domínio que dispara regras de negócio e eventos de ciclo de vida (use `CREATE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    STORE EXECUTION_LOG
+    STORE ORDER
+  }
+  ```
+- **Comportamento Transacional & Saga**: Mutante. A compensação típica é a remoção da chave ou registro via `DELETE`.
+
+---
+
+#### 19. `CALCULATE`
+- **Definição Semântica**: Aplica formulações matemáticas, cálculos financeiros ou operações lógicas determinísticas sobre parâmetros numéricos.
+- **Para que serve**: Calcular o valor de imposto sobre valor agregado (IVA), estimar prazo e preço de frete a partir de peso e coordenadas, calcular descontos promocionais escalonados.
+- **Quando usar**: Quando a operação for uma função pura que recebe números ou variáveis de contexto e devolve um valor calculado.
+- **Quando NÃO usar**:
+  - Não use quando o cálculo depender de chamadas externas de rede para obter dados (combine `FETCH` para obter as cotações e em seguida `CALCULATE` para o resultado).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    CALCULATE TAX
+    CALCULATE SHIPPING_COST
+  }
+  ```
+- **Comportamento Transacional & Saga**: Função matemática pura, totalmente determinística e idempotente.
+
+---
+
+#### 20. `REFUND`
+- **Definição Semântica**: Realiza o estorno de valores financeiros cobrados previamente, debitando a conta recebedora e creditando a conta de origem do pagador.
+- **Para que serve**: Devolver o dinheiro de uma compra após desistência do consumidor, compensar um débito indevido ou estornar transação em falhas de orquestração.
+- **Quando usar**: Em fluxos de pós-venda, devoluções comerciais ou como ação de compensação mandatória para transações financeiras (`EXECUTE PAYMENT`).
+- **Quando NÃO usar**:
+  - Não use para cancelar reservas de produtos físicos em estoque (use `RELEASE STOCK`).
+  - Não use para cancelar ordens sem dinheiro envolvido (use `CANCEL ORDER`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    REFUND PAYMENT
+  }
+  ```
+- **Comportamento Transacional & Saga**: Ação de compensação por excelência no padrão Saga. Deve possuir chave de idempotência rigorosa para evitar estornos duplicados.
+
+---
+
+#### 21. `CANCEL`
+- **Definição Semântica**: Interrompe formalmente a continuidade de um processo de negócio, invalidando contratos, reservas ou ordens ativas e marcando-os como "CANCELADO".
+- **Para que serve**: Cancelar uma remessa antes de ser coletada pelo caminhão, cancelar agendamento de consulta médica, abortar contrato de serviço antes da ativação.
+- **Quando usar**: Para transicionar o estado de um ciclo de vida de negócio de "ATIVO" ou "PENDENTE" para "CANCELADO".
+- **Quando NÃO usar**:
+  - Não use para realizar estorno de dinheiro de volta ao cartão do cliente (use `REFUND`).
+  - Não use para deletar fisicamente o registro do banco de dados (use `DELETE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    CANCEL SHIPMENT
+    CANCEL ORDER
+  }
+  ```
+- **Comportamento Transacional & Saga**: Ação de encerramento ou compensação. Tipicamente idempotente.
+
+---
+
+#### 22. `APPROVE`
+- **Definição Semântica**: Registra a autorização formal de uma proposta ou requisição que aguardava parecer administrativo, validação de conformidade ou liberação de alçada.
+- **Para que serve**: Aprovar concessão de limite de crédito para cliente, aprovar cadastro de novo parceiro comercial na rede, autorizar requisição de compra corporativa.
+- **Quando usar**: Em fluxos de governança que exigem validação manual, dupla checagem ou pontuação de aprovação automática acima do limiar.
+- **Quando NÃO usar**:
+  - Não use para validações automáticas de schema técnico de dados (use `VALIDATE`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    APPROVE CREDIT_LIMIT
+  }
+  ```
+- **Comportamento Transacional & Saga**: Transição de estado de negócio para "APROVADO". Caso ocorra rollback posterior, a compensação associada é o `REJECT` ou `CANCEL`.
+
+---
+
+#### 23. `REJECT`
+- **Definição Semântica**: Recusa formally uma solicitação, pedido de adesão ou transação, encerrando o fluxo em conformidade com as regras de governança e auditoria.
+- **Para que serve**: Rejeitar sinistro de seguro por falta de cobertura, recusar transação de alto risco identificada pela análise de fraude, reprovar cadastro com dados incorretos.
+- **Quando usar**: Para formalizar a recusa de uma intenção que dependia de avaliação prévia.
+- **Quando NÃO usar**:
+  - Não use para tratar falhas transitórias de conexão de rede ou erros 500 de servidores (use blocos de resiliência `RETRY` e `TIMEOUT`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    REJECT LOAN_PROPOSAL
+  }
+  ```
+- **Comportamento Transacional & Saga**: Estado terminal. Uma intenção rejeitada encerra a transação com registro no log de auditoria.
+
+---
+
+### Detalhamento dos 8 Verbos Operacionais & Transacionais Adicionais
+
+#### 24. `CHECK`
+- **Definição Semântica**: Consulta instantânea de estado ou disponibilidade de recursos sem realizar alocações, reservas ou mutações.
+- **Para que serve**: Verificar se um produto está disponível na prateleira (`CHECK STOCK`), consultar a saúde de um nó (`CHECK HEALTH`), checar saldo da conta (`CHECK BALANCE`).
+- **Diferença com `FETCH` e `RESERVE`**: O `CHECK` apenas responde se o recurso existe e está disponível no instante atual. O `FETCH` busca e transfere os dados completos. O `RESERVE` bloqueia ativamente o recurso para que ninguém mais possa comprá-lo.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    CHECK STOCK
+  }
+  ```
+- **Transacional**: Somente leitura, puramente idempotente e de baixíssima latência.
+
+---
+
+#### 25. `RESERVE`
+- **Definição Semântica**: Bloqueia e retém temporariamente uma quantidade específica de recursos (produtos, assentos, saldo financeiro) com tempo de expiração (TTL).
+- **Para que serve**: Reter 1 unidade de produto no armazém por 15 minutos enquanto o pagamento é processado no gateway externo.
+- **Diferença com `CHECK` e `CREATE`**: `CHECK` não retém o recurso; `CREATE` cria um recurso novo. `RESERVE` diminui temporariamente a disponibilidade pública do recurso existente.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    RESERVE STOCK
+  }
+  ```
+- **Transacional & Saga**: Exige ação compensatória obrigatória: se a compra não for concluída, o orquestrador dispara automaticamente `RELEASE STOCK` para disponibilizar o produto novamente.
+
+---
+
+#### 26. `RELEASE`
+- **Definição Semântica**: Desbloqueia e devolve à disponibilidade geral recursos previamente retidos pelo verbo `RESERVE`.
+- **Para que serve**: Liberar o estoque reservado após o cartão de crédito do cliente ser rejeitado, desbloquear assentos em voos após expiração do tempo de checkout.
+- **Diferença com `DELETE`**: `DELETE` remove o item do banco de dados para sempre; `RELEASE` devolve o item para a prateleira comercial.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    RELEASE STOCK
+  }
+  ```
+- **Transacional & Saga**: Ação primária de compensação no padrão Saga para reversão de reservas. Deve ser estritamente idempotente.
+
+---
+
+#### 27. `SEND`
+- **Definição Semântica**: Realiza a expedição física ou digital direta de um artefato específico ou mensagem a um destinatário definido.
+- **Para que serve**: Enviar recibo fiscal por e-mail, enviar fatura anexada, expedir pacote físico de mercadorias.
+- **Diferença com `NOTIFY` e `PUBLISH`**: `NOTIFY` foca no alerta leve de status; `PUBLISH` emite um evento no barramento para múltiplos assinantes; `SEND` transfere um payload de entrega pontual.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    SEND CONFIRMATION
+    SEND INVOICE
+  }
+  ```
+- **Transacional**: Comunicação no mundo real, com efeito colateral persistente.
+
+---
+
+#### 28. `DISPATCH`
+- **Definição Semântica**: Aciona a execução de trabalhadores assíncronos em segundo plano ou despacha tarefas operacionais para a cadeia logística física.
+- **Para que serve**: Acionar worker de fila para codificação de vídeo, notificar transportadora para retirada de encomenda no armazém.
+- **Diferença com `EXECUTE`**: `EXECUTE` roda comandos no fluxo síncrono imediato; `DISPATCH` aciona operações delegadas e desacopladas.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    DISPATCH SHIPMENT
+    DISPATCH WORKER
+  }
+  ```
+- **Transacional**: Disparo desacoplado de execuções em background.
+
+---
+
+#### 29. `PUBLISH`
+- **Definição Semântica**: Emite um evento de negócio ou mensagem formatada para um tópico em um barramento distribuído (ex.: Apache Kafka, RabbitMQ, Redis Pub/Sub).
+- **Para que serve**: Notificar o ecossistema distribuído de que um evento de domínio ocorreu (ex.: `ORDER_PLACED`), desacoplando produtores de consumidores.
+- **Diferença com `NOTIFY`**: `NOTIFY` é voltado a pessoas ou webhooks pontuais; `PUBLISH` é a espinha dorsal de Arquiteturas Orientadas a Eventos (EDA).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    PUBLISH ORDER_EVENT
+  }
+  ```
+- **Transacional & Saga**: O evento emitido deve carregar a chave de correlação (`correlationId`) para permitir rastreamento distribuído e eventos compensatórios.
+
+---
+
+#### 30. `ARCHIVE`
+- **Definição Semântica**: Transfere dados inativos ou históricos de tabelas operacionais de alta velocidade para repositórios frios com retenção imutável.
+- **Para que serve**: Arquivar logs de auditoria após 1 ano, mover pedidos antigos para storage em nuvem de baixo custo, cumprir conformidade SOC2 e ISO 27001.
+- **Diferença com `DELETE`**: `DELETE` destrói o dado; `ARCHIVE` preserva a integridade e histórico do dado para fiscalização futura fora do banco de produção.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    ARCHIVE AUDIT_LOGS
+  }
+  ```
+- **Transacional**: Idempotente e focado em governança de dados.
+
+---
+
+#### 31. `AUDIT`
+- **Definição Semântica**: Inspeciona a integridade das trilhas forenses, assinaturas criptográficas e conformidade das transações registradas no sistema.
+- **Para que serve**: Verificar se os registros do banco sofreram adulterações, validar conformidade de relatórios financeiros, auditar permissões de usuários.
+- **Diferença com `VALIDATE`**: `VALIDATE` checa o payload antes de executar; `AUDIT` examina o que foi executado para garantir lisura forense.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    AUDIT TRANSACTION_TRAIL
+  }
+  ```
+- **Transacional**: Somente leitura analítica especializada em segurança.
+
+---
+
+### Guia Rápido: Como Escolher o Verbo Correto?
+
+Quando estiver modelando um fluxo ou registrando um microsserviço no INP Protocol, faça as seguintes perguntas:
+
+1. **A ação cria um registro de negócio com ID próprio?**
+   ➔ Use `CREATE`. (Se for só gravação em cache/storage, use `STORE`).
+2. **A ação lê dados do seu próprio banco ou de uma API externa?**
+   ➔ Do próprio banco: use `READ`. De uma API externa ou fornecedor remoto: use `FETCH`.
+3. **A ação apenas verifica disponibilidade sem reter nada?**
+   ➔ Use `CHECK`. (Se precisar bloquear o item para garantir a compra, use `RESERVE`).
+4. **O fluxo falhou e você precisa desfazer a reserva de estoque?**
+   ➔ Use `RELEASE`.
+5. **O fluxo falhou e você precisa devolver o dinheiro cobrado?**
+   ➔ Use `REFUND`.
+6. **A ação altera status de negócio para cancelado ou aprovado?**
+   ➔ Use `CANCEL` ou `APPROVE`.
+7. **A ação envolve cobrança financeira atômica imediata?**
+   ➔ Use `EXECUTE PAYMENT`.
+8. **A ação precisa checar quem é a pessoa vs quais as permissões dela?**
+   ➔ Quem é: use `AUTHENTICATE`. Permissões: use `AUTHORIZE`.
+9. **A ação calcula valores com fórmulas matemáticas puras?**
+   ➔ Use `CALCULATE`.
+10. **A ação avisa pessoas sobre o resultado de forma leve?**
+    ➔ Use `NOTIFY`.
+11. **A ação emite dados para múltiplos microsserviços em mensageria?**
+    ➔ Use `PUBLISH`.
+

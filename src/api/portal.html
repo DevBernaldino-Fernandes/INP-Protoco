@@ -1072,6 +1072,7 @@ print(<span style="color: var(--warning);">"Resultado final:"</span>, response[<
         </div>
         <div class="dict-filters">
           <button class="dict-filter-btn active" data-category="all">Todos</button>
+          <button class="dict-filter-btn" data-category="Verbo">Verbos</button>
           <button class="dict-filter-btn" data-category="Estrutura">Estrutura</button>
           <button class="dict-filter-btn" data-category="Controle">Controle</button>
           <button class="dict-filter-btn" data-category="Resiliência">Resiliência</button>
@@ -1701,6 +1702,7 @@ print(<span style="color: var(--warning);">"Resultado final:"</span>, response[<
           <a href="#doc-saga" class="docs-nav-item">9. Padrão Saga & Rollback</a>
           <a href="#doc-outbox" class="docs-nav-item">10. Fila & Outbox (SKIP LOCKED)</a>
           <a href="#doc-cryptosafe" class="docs-nav-item">11. SafeEvaluator & Criptografia</a>
+          <a href="#doc-verbs" class="docs-nav-item">12. Catálogo Oficial de Verbos</a>
         </div>
 
         <div class="docs-body">
@@ -1814,6 +1816,257 @@ print(<span style="color: var(--warning);">"Resultado final:"</span>, response[<
               <li><strong>SafeEvaluator:</strong> Um analisador sintático completo baseado em AST (Árvore de Sintaxe Abstrata) construído com Parser de Descida Recursiva. Ele substitui <code>eval()</code> nas etapas de <code>CONDITION</code>, permitindo avaliar condições lógicas/matemáticas (ex: <code>context.amount > 100</code>) de forma blindada contra injeção de código arbítrio.</li>
               <li><strong>Criptografia com Rotação (CryptoEngine):</strong> Fornece encriptação simétrica forte usando o algoritmo <code>aes-256-gcm</code>. Suporta rotação de chaves baseada em versão de prefixo (ex: <code>v2:iv:authTag:cipherText</code>), mantendo compatibilidade reversa para ler dados antigos enquanto criptografa novas entradas usando a chave activa mais recente.</li>
             </ul>
+          </div>
+
+          <!-- Catálogo Oficial de Verbos Canónicos -->
+          <div id="doc-verbs" class="docs-sec">
+            <h2>12. Catálogo Oficial de Verbos de Intenção (Gramática &amp; Semântica)</h2>
+            <p>No <strong>Intent Network Protocol (INP)</strong>, as capacidades de microsserviços e os passos de fluxo são sempre estruturados no formato canónico <code>&lt;VERBO&gt; &lt;ALVO&gt;</code> (exemplo: <code>EXECUTE PAYMENT</code>, <code>CHECK STOCK</code>, <code>CREATE SHIPMENT</code>).</p>
+            <p>O <strong>Verbo</strong> determina a natureza operacional, o impacto no estado do sistema, a garantia de idempotência e a estratégia de reversão transacional (Padrão Saga). Abaixo encontra-se o guia exaustivo de todos os verbos suportados pelo ecossistema, agrupados por categorias:</p>
+
+            <div style="overflow-x: auto; margin: 20px 0;">
+              <table class="data-table-modern" style="font-size: 12.5px;">
+                <thead>
+                  <tr>
+                    <th>Verbo</th>
+                    <th>Categoria</th>
+                    <th>Finalidade Principal</th>
+                    <th>Quando Usar</th>
+                    <th>Compensação Saga</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong style="color: var(--secondary);">CREATE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(0,245,255,0.15); color: #00f5ff;">CRUD</span></td>
+                    <td>Instanciar nova entidade de negócio durável com identidade própria.</td>
+                    <td>Ao gerar registros permanentes (usuário, remessa, fatura). Não use para cache.</td>
+                    <td><code>DELETE</code> / <code>CANCEL</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #60a5fa;">READ</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(96,165,250,0.15); color: #93c5fd;">Consulta</span></td>
+                    <td>Recuperar a representação de uma entidade local já existente pelo ID.</td>
+                    <td>Ao ler dados do banco interno da aplicação. Não use para APIs externas.</td>
+                    <td>Nenhuma (Idempotente)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #fbbf24;">UPDATE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(251,191,36,0.15); color: #fde68a;">Mutação</span></td>
+                    <td>Modificar campos ou propriedades de um recurso que já existe.</td>
+                    <td>Ao alterar status, endereços ou configurações. Não use para novas entidades.</td>
+                    <td><code>UPDATE</code> (Snapshot anterior)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #f87171;">DELETE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(248,113,113,0.15); color: #fca5a5;">Destrutivo</span></td>
+                    <td>Remover fisicamente ou expurgar uma entidade do armazenamento.</td>
+                    <td>Para encerramento definitivo ou LGPD/GDPR. Não use para abortar pedidos.</td>
+                    <td><code>RESTORE</code> / <code>CREATE</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: var(--secondary);">EXECUTE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(0,245,255,0.15); color: #00f5ff;">Comando</span></td>
+                    <td>Disparar comando transacional atômico imperativo de alta criticidade.</td>
+                    <td>Para transações imediatas (ex.: cobrar cartão, liquidar PIX).</td>
+                    <td><code>REFUND</code> / <code>CANCEL</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #a78bfa;">PROCESS</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(167,139,250,0.15); color: #c4b5fd;">Lote/Fila</span></td>
+                    <td>Tratamento sequencial ou computação contínua de lotes de dados.</td>
+                    <td>Para processar filas de eventos, lotes de faturas ou arquivos.</td>
+                    <td>DLQ / Reprocessamento</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #34d399;">ANALYZE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(52,211,153,0.15); color: #6ee7b7;">Inteligência</span></td>
+                    <td>Avaliação analítica, detecção de padrões e scoring sem efeitos colaterais.</td>
+                    <td>Para scoring de fraude, análise de risco de crédito ou telemetria.</td>
+                    <td>Nenhuma (Idempotente)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #a78bfa;">GENERATE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(167,139,250,0.15); color: #c4b5fd;">Síntese</span></td>
+                    <td>Sintetizar artefatos derivados, documentos, tokens ou relatórios.</td>
+                    <td>Para emitir relatório PDF, gerar token JWT ou criar QR Code.</td>
+                    <td><code>DELETE</code> (Limpeza)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #fbbf24;">TRANSFER</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(251,191,36,0.15); color: #fde68a;">Transacional</span></td>
+                    <td>Mover recursos, ativos ou fundos de forma balanceada (débito + crédito).</td>
+                    <td>Para transferências bancárias ou movimentação de inventário entre centros.</td>
+                    <td><code>TRANSFER</code> (Inverso)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #34d399;">VALIDATE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(52,211,153,0.15); color: #6ee7b7;">Regras</span></td>
+                    <td>Verificar conformidade estrutural contra schemas e regras de negócio.</td>
+                    <td>Como barreira prévia antes de gastar recursos de processamento.</td>
+                    <td>Nenhuma (Função pura)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #f472b6;">AUTHENTICATE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(244,114,182,0.15); color: #fbcfe8;">Segurança</span></td>
+                    <td>Verificar a identidade através de credenciais (Responde: <em>"Quem é você?"</em>).</td>
+                    <td>Ao efetuar login, checar senha ou validar token bearer.</td>
+                    <td>Nenhuma (Idempotente)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #f472b6;">AUTHORIZE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(244,114,182,0.15); color: #fbcfe8;">Segurança</span></td>
+                    <td>Conferir privilégios RBAC/ABAC (Responde: <em>"Você tem permissão para isso?"</em>).</td>
+                    <td>Ao validar se o usuário autenticado pode executar uma ação restrita.</td>
+                    <td>Nenhuma (Idempotente)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #38bdf8;">NOTIFY</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(56,189,248,0.15); color: #7dd3fc;">Comunicação</span></td>
+                    <td>Disparar alertas ou mensagens assíncronas unilaterais para destinatários.</td>
+                    <td>Para avisar via SMS, e-mail leve, webhook ou push mobile.</td>
+                    <td><code>NOTIFY CANCELLATION</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #38bdf8;">SYNC</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(56,189,248,0.15); color: #7dd3fc;">Rede</span></td>
+                    <td>Conciliar réplicas e alinhar dados entre sistemas heterogêneos.</td>
+                    <td>Para reconciliar estoque com ERP externo ou sincronizar bancos.</td>
+                    <td><code>SYNC</code> (Idempotente)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #60a5fa;">ROUTE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(96,165,250,0.15); color: #93c5fd;">Roteamento</span></td>
+                    <td>Encaminhar pacotes, tráfego ou intenções para nós ou shards ótimos.</td>
+                    <td>Em cenários de federação distribuída ou balanceamento dinâmico.</td>
+                    <td>Nenhuma (Infraestrutura)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #a78bfa;">COMPOSE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(167,139,250,0.15); color: #c4b5fd;">Agregação</span></td>
+                    <td>Fundir e agregar saídas de múltiplos microsserviços num único payload.</td>
+                    <td>Ao final de pipelines concorrentes para retornar resumo conciso.</td>
+                    <td>Nenhuma (Transformação)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #60a5fa;">FETCH</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(96,165,250,0.15); color: #93c5fd;">I/O Remoto</span></td>
+                    <td>Buscar e recuperar ativamente dados em serviços remotos ou APIs de terceiros.</td>
+                    <td>Para consultar rastreio nos Correios, cotação de moedas ou tempo.</td>
+                    <td>Nenhuma (Safe read)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #fbbf24;">STORE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(251,191,36,0.15); color: #fde68a;">Persistência</span></td>
+                    <td>Gravar payloads brutos, snapshots de estado ou cache em banco/storage.</td>
+                    <td>Ao salvar rascunho de pedido, log bruto ou chave em Redis.</td>
+                    <td><code>DELETE</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #34d399;">CALCULATE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(52,211,153,0.15); color: #6ee7b7;">Matemática</span></td>
+                    <td>Executar fórmulas numéricas, impostos ou taxas determinísticas.</td>
+                    <td>Para calcular frete por distância, descontos ou IVA sem I/O de rede.</td>
+                    <td>Nenhuma (Função pura)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #f87171;">REFUND</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(248,113,113,0.15); color: #fca5a5;">Saga/Finanças</span></td>
+                    <td>Estornar transações financeiras previamente cobradas, devolvendo fundos.</td>
+                    <td>Em devoluções comerciais ou compensação mandatória para <code>EXECUTE PAYMENT</code>.</td>
+                    <td>Nenhuma (Terminal)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #f87171;">CANCEL</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(248,113,113,0.15); color: #fca5a5;">Saga/Ciclo</span></td>
+                    <td>Interromper formalmente pedidos ou contratos ativos mudando status para CANCELADO.</td>
+                    <td>Para abortar pedido antes do envio ou anular agendamento. Não use para estorno em dinheiro.</td>
+                    <td><code>REOPEN</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #34d399;">APPROVE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(52,211,153,0.15); color: #6ee7b7;">Governança</span></td>
+                    <td>Registrar parecer favorável formal a uma proposta ou requisição sob quarentena.</td>
+                    <td>Em esteiras com aprovação de alçada, limite de crédito ou compliance.</td>
+                    <td><code>REJECT</code> / <code>CANCEL</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #f87171;">REJECT</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(248,113,113,0.15); color: #fca5a5;">Governança</span></td>
+                    <td>Recusar formalmente uma proposta ou solicitação que não cumpriu os requisitos.</td>
+                    <td>Para indeferir cadastro com fraude ou reprovar crédito. Não use para erros 500 de rede.</td>
+                    <td>Nenhuma (Terminal)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #38bdf8;">CHECK</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(56,189,248,0.15); color: #7dd3fc;">Verificação</span></td>
+                    <td>Consultar disponibilidade ou saldo de forma instantânea sem reter recursos.</td>
+                    <td>Para checar se há estoque ou verificar status de saúde do nó.</td>
+                    <td>Nenhuma (Idempotente)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #fbbf24;">RESERVE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(251,191,36,0.15); color: #fde68a;">Transacional</span></td>
+                    <td>Bloquear temporariamente recursos (estoque, fundos, assentos) com TTL.</td>
+                    <td>Durante o checkout para garantir o produto antes do pagamento.</td>
+                    <td><code>RELEASE</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #34d399;">RELEASE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(52,211,153,0.15); color: #6ee7b7;">Saga/Estoque</span></td>
+                    <td>Desbloquear recursos previamente retidos pelo verbo <code>RESERVE</code>.</td>
+                    <td>Ação de compensação no padrão Saga quando o pagamento falhar.</td>
+                    <td>Nenhuma (Idempotente)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #38bdf8;">SEND</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(56,189,248,0.15); color: #7dd3fc;">Expedição</span></td>
+                    <td>Enviar documento ou payload específico diretamente a um destinatário.</td>
+                    <td>Para enviar fatura anexada, recibo ou confirmação de entrega.</td>
+                    <td>Nenhuma (Mundo real)</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #a78bfa;">DISPATCH</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(167,139,250,0.15); color: #c4b5fd;">Assíncrono</span></td>
+                    <td>Acionar worker de segundo plano ou despachar mercadoria física.</td>
+                    <td>Para delegar tarefas pesadas a agentes assíncronos ou caminhão de entrega.</td>
+                    <td><code>CANCEL</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #a78bfa;">PUBLISH</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(167,139,250,0.15); color: #c4b5fd;">Eventos</span></td>
+                    <td>Publicar evento de domínio em barramentos pub/sub (Kafka, RabbitMQ, Redis).</td>
+                    <td>Em arquiteturas orientadas a eventos (EDA) com múltiplos assinantes.</td>
+                    <td>Evento Compensatório</td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #94a3b8;">ARCHIVE</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(148,163,184,0.15); color: #cbd5e1;">Conformidade</span></td>
+                    <td>Mover histórico de dados inativos para armazenamento frio e imutável.</td>
+                    <td>Para reter logs fiscais e auditoria após 1 ano sem sobrecarregar o banco.</td>
+                    <td><code>RESTORE</code></td>
+                  </tr>
+                  <tr>
+                    <td><strong style="color: #f472b6;">AUDIT</strong></td>
+                    <td><span class="badge-tag" style="background: rgba(244,114,182,0.15); color: #fbcfe8;">Forense</span></td>
+                    <td>Inspecionar a integridade de trilhas de auditoria e conformidade legal.</td>
+                    <td>Para auditar consistência contábil, integridade de hashes e conformidade SOC2.</td>
+                    <td>Nenhuma (Somente leitura)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="content-box" style="margin-top: 25px; padding: 20px; border-left: 4px solid var(--secondary);">
+              <h4 style="color: var(--secondary); margin-top: 0; font-size: 15px;">💡 Guia de Decisão Prático para Engenheiros</h4>
+              <p style="font-size: 13.5px; color: var(--text); line-height: 1.6; margin-bottom: 10px;">
+                • <strong>Criar vs Armazenar:</strong> Se estiver criando um novo recurso de negócio com ciclo de vida e identidade, use <code>CREATE</code>. Se estiver apenas gravando um payload bruto no banco ou gravando cache, use <code>STORE</code>.<br>
+                • <strong>Ler vs Buscar vs Checar:</strong> Se o registro está no seu banco local pelo ID, use <code>READ</code>. Se precisa chamar uma API externa ou fornecedor na rede, use <code>FETCH</code>. Se precisa apenas checar se há disponibilidade sem carregar o objeto inteiro, use <code>CHECK</code>.<br>
+                • <strong>Executar vs Processar:</strong> Se a ação for imediata, unitária e crítica (como cobrar um cartão), use <code>EXECUTE</code>. Se for uma fila contínua ou lote de itens, use <code>PROCESS</code>.<br>
+                • <strong>Autenticar vs Autorizar:</strong> <code>AUTHENTICATE</code> valida a identidade (<em>"Você é o utilizador X?"</em>). <code>AUTHORIZE</code> checa permissões RBAC (<em>"Você pode executar a ação Y?"</em>).<br>
+                • <strong>Compensações no Padrão Saga:</strong> Sempre declare pares reversíveis no registro de capacidades. Por exemplo: <code>EXECUTE PAYMENT</code> compensa com <code>REFUND PAYMENT</code>; <code>RESERVE STOCK</code> compensa com <code>RELEASE STOCK</code>.
+              </p>
+            </div>
           </div>
         </div>
       </div>

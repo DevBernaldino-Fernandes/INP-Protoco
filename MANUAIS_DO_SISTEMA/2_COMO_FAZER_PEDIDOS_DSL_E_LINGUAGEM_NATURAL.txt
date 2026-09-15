@@ -154,4 +154,51 @@ curl -X POST http://localhost:3000/api/intent \
     "securityContext": { "userId": "usr_buyer_42", "permissions": ["payments.write"] }
   }'
 ```
+
+--------------------------------------------------------------------------------
+GUIA PRÁTICO DE VERBOS DO PROTOCOLO: QUAL USAR E QUANDO USAR
+--------------------------------------------------------------------------------
+Toda capacidade no INP Protocol é declarada como [VERBO] [TARGET] (ex: EXECUTE PAYMENT).
+Para saber qual verbo escolher ao criar DSLs ou registrar microsserviços:
+
+1. CRUD & GESTÃO DE ENTIDADES:
+- CREATE: Cria um objeto novo com ID próprio (ex: CREATE SHIPMENT, CREATE USER).
+- READ: Consulta um registro existente no banco local pelo ID (ex: READ PROFILE).
+- UPDATE: Altera campos de um registro que já existe (ex: UPDATE ADDRESS).
+- DELETE: Remove fisicamente ou encerra um registro (ex: DELETE SESSION).
+
+2. EXECUÇÃO & PROCESSAMENTO:
+- EXECUTE: Executa uma ação atômica imediata com efeito no mundo real (ex: EXECUTE PAYMENT).
+- PROCESS: Trata múltiplos registros em lote ou fila contínua (ex: PROCESS BATCH).
+- ROUTE: Roteia o tráfego ou intenção para o nó ótimo (ex: ROUTE INTENT).
+- COMPOSE: Consolida saídas de vários serviços numa resposta única (ex: COMPOSE RESPONSE).
+
+3. REGRAS, ANÁLISE & CÁLCULOS:
+- VALIDATE: Valida schemas JSON ou regras técnicas antes de rodar (ex: VALIDATE SCHEMA).
+- CHECK: Verifica disponibilidade rápida sem reter ou bloquear (ex: CHECK STOCK, CHECK HEALTH).
+- CALCULATE: Aplica cálculos matemáticos e orçamentários puros (ex: CALCULATE TAX).
+- ANALYZE: Avalia scores analíticos, fraude ou risco (ex: ANALYZE FRAUD).
+
+4. SAGA, TRANSAÇÕES & REVERSÕES:
+- RESERVE: Bloqueia estoque/saldo temporariamente com TTL (ex: RESERVE STOCK).
+- RELEASE: Desfaz a reserva de estoque devolvendo o item (ex: RELEASE STOCK).
+- TRANSFER: Move fundos/ativos entre duas contas (débito + crédito) (ex: TRANSFER FUNDS).
+- REFUND: Estorna dinheiro de pagamento em caso de falha/arrependimento (ex: REFUND PAYMENT).
+- CANCEL: Cancela uma ordem ou processo ativo (ex: CANCEL ORDER).
+- APPROVE / REJECT: Aprova ou rejeita propostas de crédito ou cadastros (ex: APPROVE LOAN).
+
+5. SEGURANÇA & ACESSO:
+- AUTHENTICATE: Responde "Quem é você?" validando login/tokens (ex: AUTHENTICATE USER).
+- AUTHORIZE: Responde "Você pode fazer isso?" validando RBAC (ex: AUTHORIZE ACTION).
+- AUDIT: Verifica integridade forense de transações (ex: AUDIT LOGS).
+
+6. COMUNICAÇÃO & DISTRIBUIÇÃO:
+- NOTIFY: Envia alertas unilaterais aos usuários via SMS/Push (ex: NOTIFY USER).
+- SEND: Envia documentos pontuais como faturas ou recibos (ex: SEND CONFIRMATION).
+- PUBLISH: Emite eventos para barramentos como Kafka/RabbitMQ (ex: PUBLISH EVENT).
+- SYNC: Reconcilia divergências de dados entre bancos e ERPs (ex: SYNC INVENTORY).
+- DISPATCH: Lança worker de segundo plano ou envio logístico (ex: DISPATCH SHIPMENT).
+- GENERATE: Gera artefatos derivados como relatórios PDF ou tokens (ex: GENERATE REPORT).
+- STORE / ARCHIVE: STORE salva payloads no banco/cache; ARCHIVE guarda histórico frio.
+
 ================================================================================

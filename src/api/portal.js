@@ -3547,6 +3547,874 @@ print(response.resolved_dsl)`
 flow = Step("EXECUTE PAYMENT")
 
 response = client.execute(flow)`
+  },
+  CREATE: {
+    name: 'CREATE',
+    category: 'Verbo',
+    desc: 'Instancia uma nova entidade durável no domínio de negócio, atribuindo-lhe identidade primária (ID global) e iniciando o seu ciclo de vida. Use para cadastrar utilizadores, novas remessas, pedidos comerciais ou faturas fiscais. Não use para gravação em cache (use STORE).',
+    analogy: 'Como lavrar uma nova certidão de nascimento no cartório: o documento oficial passa a existir juridicamente com número único e validade perpétua.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "create_shipment" {
+  REQUIRE {
+    CREATE SHIPMENT
+  }
+  FLOW {
+    SEQUENCE {
+      CREATE SHIPMENT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "CREATE SHIPMENT",
+  "verb": "CREATE",
+  "target": "SHIPMENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Cria nova remessa de envio durável
+flow = Step("CREATE SHIPMENT")
+response = client.execute(flow)`
+  },
+  READ: {
+    name: 'READ',
+    category: 'Verbo',
+    desc: 'Consulta e recupera os atributos de uma entidade já existente no banco de dados local pelo seu ID. Operação puramente de leitura, segura e idempotente. Não use para chamadas em APIs de terceiros (use FETCH).',
+    analogy: 'Como abrir a ficha cadastral arquivada na gaveta da empresa para consultar os dados do cliente sem alterar nada.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "read_profile" {
+  REQUIRE {
+    READ USER_PROFILE
+  }
+  FLOW {
+    SEQUENCE {
+      READ USER_PROFILE
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "READ USER_PROFILE",
+  "verb": "READ",
+  "target": "USER_PROFILE"
+}`,
+    python: `from inp_sdk import Step
+
+# Consulta perfil de utilizador existente
+flow = Step("READ USER_PROFILE")
+response = client.execute(flow)`
+  },
+  UPDATE: {
+    name: 'UPDATE',
+    category: 'Verbo',
+    desc: 'Modifica os atributos, campos ou o estado operacional de um recurso pré-existente. Preserva a identidade histórica enquanto atualiza seus valores no banco.',
+    analogy: 'Como averbar um novo endereço na sua certidão: a pessoa jurídica continua a mesma, mas os detalhes de contato são renovados.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "update_address" {
+  REQUIRE {
+    UPDATE SHIPPING_ADDRESS
+  }
+  FLOW {
+    SEQUENCE {
+      UPDATE SHIPPING_ADDRESS
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "UPDATE SHIPPING_ADDRESS",
+  "verb": "UPDATE",
+  "target": "SHIPPING_ADDRESS"
+}`,
+    python: `from inp_sdk import Step
+
+# Atualiza endereço de entrega do pedido
+flow = Step("UPDATE SHIPPING_ADDRESS")
+response = client.execute(flow)`
+  },
+  DELETE: {
+    name: 'DELETE',
+    category: 'Verbo',
+    desc: 'Elimina de forma definitiva ou lógica uma entidade do armazenamento. Usado para expurgo de dados obsoletos, encerramento de sessões ou direito ao esquecimento (LGPD/GDPR).',
+    analogy: 'Como triturar um arquivo confidencial expirado na máquina de fragmentação: o registro é eliminado definitivamente do arquivo físico.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "delete_session" {
+  REQUIRE {
+    DELETE USER_SESSION
+  }
+  FLOW {
+    SEQUENCE {
+      DELETE USER_SESSION
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "DELETE USER_SESSION",
+  "verb": "DELETE",
+  "target": "USER_SESSION"
+}`,
+    python: `from inp_sdk import Step
+
+# Elimina a sessão do utilizador
+flow = Step("DELETE USER_SESSION")
+response = client.execute(flow)`
+  },
+  EXECUTE: {
+    name: 'EXECUTE',
+    category: 'Verbo',
+    desc: 'Dispara uma ação transacional atômica e imperativa de alta criticidade no mundo real (ex: pagamentos, contratos). Exige obrigatoriamente a declaração de uma capacidade de compensação (Padrão Saga: REFUND).',
+    analogy: 'Como passar o cartão de crédito e digitar a senha: uma transação financeira imediata e atômica é acionada na adquirente.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "execute_payment" {
+  REQUIRE {
+    EXECUTE PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      EXECUTE PAYMENT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "EXECUTE PAYMENT",
+  "verb": "EXECUTE",
+  "target": "PAYMENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Dispara cobrança monetária imediata
+flow = Step("EXECUTE PAYMENT")
+response = client.execute(flow)`
+  },
+  PROCESS: {
+    name: 'PROCESS',
+    category: 'Verbo',
+    desc: 'Submete lotes de registros, fluxos contínuos ou filas assíncronas a uma sequência de computação e tratamento. Usado para faturamento em lote, conversão de arquivos ou drenagem de eventos.',
+    analogy: 'Como a linha de montagem industrial: dezenas de itens são processados ordenadamente por múltiplos estágios sucessivos.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "process_batch" {
+  REQUIRE {
+    PROCESS INVOICE_BATCH
+  }
+  FLOW {
+    SEQUENCE {
+      PROCESS INVOICE_BATCH
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "PROCESS INVOICE_BATCH",
+  "verb": "PROCESS",
+  "target": "INVOICE_BATCH"
+}`,
+    python: `from inp_sdk import Step
+
+# Processa lote de faturas em segundo plano
+flow = Step("PROCESS INVOICE_BATCH")
+response = client.execute(flow)`
+  },
+  ANALYZE: {
+    name: 'ANALYZE',
+    category: 'Verbo',
+    desc: 'Aplica algoritmos de inteligência artificial, regras estatísticas ou telemetria para inspecionar um conjunto de dados e extrair scores de risco ou diagnósticos. Somente leitura.',
+    analogy: 'Como um laboratório analisando um exame clínico: o laudo diagnóstico é emitido sem alterar a amostra examinada.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "analyze_fraud" {
+  REQUIRE {
+    ANALYZE FRAUD_RISK
+  }
+  FLOW {
+    SEQUENCE {
+      ANALYZE FRAUD_RISK
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "ANALYZE FRAUD_RISK",
+  "verb": "ANALYZE",
+  "target": "FRAUD_RISK"
+}`,
+    python: `from inp_sdk import Step
+
+# Analisa risco de fraude transacional
+flow = Step("ANALYZE FRAUD_RISK")
+response = client.execute(flow)`
+  },
+  GENERATE: {
+    name: 'GENERATE',
+    category: 'Verbo',
+    desc: 'Produz artefatos digitais sintetizados, códigos temporários, documentos derivados ou relatórios a partir de templates ou cálculos (ex: relatórios PDF, tokens JWT, QR Codes).',
+    analogy: 'Como uma máquina fotográfica instantânea: recebe a luz e o cenário e sintetiza uma fotografia impressa no mesmo instante.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "generate_invoice" {
+  REQUIRE {
+    GENERATE INVOICE_PDF
+  }
+  FLOW {
+    SEQUENCE {
+      GENERATE INVOICE_PDF
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "GENERATE INVOICE_PDF",
+  "verb": "GENERATE",
+  "target": "INVOICE_PDF"
+}`,
+    python: `from inp_sdk import Step
+
+# Gera o PDF da fatura para o cliente
+flow = Step("GENERATE INVOICE_PDF")
+response = client.execute(flow)`
+  },
+  TRANSFER: {
+    name: 'TRANSFER',
+    category: 'Verbo',
+    desc: 'Transfere fundos monetários, ativos digitais ou inventário de uma entidade de origem para uma de destino de forma balanceada e atômica (débito obrigatório casado com crédito simultâneo).',
+    analogy: 'Como uma transferência bancária direta entre contas: os fundos saem de uma conta no exato instante em que entram na outra.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "transfer_funds" {
+  REQUIRE {
+    TRANSFER FUNDS
+  }
+  FLOW {
+    SEQUENCE {
+      TRANSFER FUNDS
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "TRANSFER FUNDS",
+  "verb": "TRANSFER",
+  "target": "FUNDS"
+}`,
+    python: `from inp_sdk import Step
+
+# Transfere fundos entre carteiras
+flow = Step("TRANSFER FUNDS")
+response = client.execute(flow)`
+  },
+  VALIDATE: {
+    name: 'VALIDATE',
+    category: 'Verbo',
+    desc: 'Inspeciona e valida se um payload, documento ou regra atende a contratos formais (JSON Schema) ou restrições de negócio antes de avançar para etapas computacionalmente caras.',
+    analogy: 'Como o inspetor de embarque conferindo se o peso da mala está dentro do limite regulamentar permitido antes de despachá-la.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "validate_order" {
+  REQUIRE {
+    VALIDATE ORDER_PAYLOAD
+  }
+  FLOW {
+    SEQUENCE {
+      VALIDATE ORDER_PAYLOAD
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "VALIDATE ORDER_PAYLOAD",
+  "verb": "VALIDATE",
+  "target": "ORDER_PAYLOAD"
+}`,
+    python: `from inp_sdk import Step
+
+# Valida payload contra o schema contratual
+flow = Step("VALIDATE ORDER_PAYLOAD")
+response = client.execute(flow)`
+  },
+  AUTHENTICATE: {
+    name: 'AUTHENTICATE',
+    category: 'Verbo',
+    desc: 'Verifica a identidade declarada de um usuário ou máquina através de credenciais criptográficas (senhas hash Argon2, JWT, certificados). Responde: "Quem é você?".',
+    analogy: 'Como apresentar o passaporte na imigração com conferência biométrica para atestar quem você é.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "auth_user" {
+  REQUIRE {
+    AUTHENTICATE USER
+  }
+  FLOW {
+    SEQUENCE {
+      AUTHENTICATE USER
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "AUTHENTICATE USER",
+  "verb": "AUTHENTICATE",
+  "target": "USER"
+}`,
+    python: `from inp_sdk import Step
+
+# Autentica credenciais de acesso
+flow = Step("AUTHENTICATE USER")
+response = client.execute(flow)`
+  },
+  AUTHORIZE: {
+    name: 'AUTHORIZE',
+    category: 'Verbo',
+    desc: 'Inspeciona matrizes de privilégios (RBAC/ABAC) para certificar se um usuário autenticado tem permissão para realizar uma ação sobre um recurso. Responde: "Você pode fazer isso?".',
+    analogy: 'Como o segurança do elevador privativo verificando se o seu crachá tem o selo de acesso autorizado à diretoria.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "authorize_payment" {
+  REQUIRE {
+    AUTHORIZE PAYMENT_SCOPE
+  }
+  FLOW {
+    SEQUENCE {
+      AUTHORIZE PAYMENT_SCOPE
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "AUTHORIZE PAYMENT_SCOPE",
+  "verb": "AUTHORIZE",
+  "target": "PAYMENT_SCOPE"
+}`,
+    python: `from inp_sdk import Step
+
+# Valida privilégio RBAC payments.write
+flow = Step("AUTHORIZE PAYMENT_SCOPE")
+response = client.execute(flow)`
+  },
+  NOTIFY: {
+    name: 'NOTIFY',
+    category: 'Verbo',
+    desc: 'Dispara mensagens, alertas em tempo real ou avisos para destinatários humanos ou serviços externos (SMS, Push, Slack, Webhook) de maneira não-bloqueante.',
+    analogy: 'Como o painel de senhas de um banco chamando o próximo cliente pelo número com aviso sonoro.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "notify_user" {
+  REQUIRE {
+    NOTIFY USER
+  }
+  FLOW {
+    SEQUENCE {
+      NOTIFY USER
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "NOTIFY USER",
+  "verb": "NOTIFY",
+  "target": "USER"
+}`,
+    python: `from inp_sdk import Step
+
+# Notifica o cliente sobre o status da compra
+flow = Step("NOTIFY USER")
+response = client.execute(flow)`
+  },
+  SYNC: {
+    name: 'SYNC',
+    category: 'Verbo',
+    desc: 'Concilia e alinha dados ou estados entre múltiplos nós, réplicas ou ERPs legados heterogêneos para garantir consistência eventual. Idempotente por natureza.',
+    analogy: 'Como acertar todos os relógios de uma estação de trem pelo sinal de rádio central para que marquem a mesma hora.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "sync_catalog" {
+  REQUIRE {
+    SYNC INVENTORY_CATALOG
+  }
+  FLOW {
+    SEQUENCE {
+      SYNC INVENTORY_CATALOG
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "SYNC INVENTORY_CATALOG",
+  "verb": "SYNC",
+  "target": "INVENTORY_CATALOG"
+}`,
+    python: `from inp_sdk import Step
+
+# Sincroniza catálogo de estoque com ERP
+flow = Step("SYNC INVENTORY_CATALOG")
+response = client.execute(flow)`
+  },
+  ROUTE: {
+    name: 'ROUTE',
+    category: 'Verbo',
+    desc: 'Analisa metadados e regras de rede e despacha a requisição para o shard de banco, cluster ou nó federado ideal com base em latência e disponibilidade.',
+    analogy: 'Como o controlador de tráfego aéreo indicando qual pista de pouso está livre e com condições ideais de vento.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "route_traffic" {
+  REQUIRE {
+    ROUTE INTENT_NODE
+  }
+  FLOW {
+    SEQUENCE {
+      ROUTE INTENT_NODE
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "ROUTE INTENT_NODE",
+  "verb": "ROUTE",
+  "target": "INTENT_NODE"
+}`,
+    python: `from inp_sdk import Step
+
+# Roteia requisição para nó federado
+flow = Step("ROUTE INTENT_NODE")
+response = client.execute(flow)`
+  },
+  COMPOSE: {
+    name: 'COMPOSE',
+    category: 'Verbo',
+    desc: 'Funde e agrega saídas parciais de múltiplos microsserviços concorrentes, gerando uma resposta final consolidada e estruturada para o cliente.',
+    analogy: 'Como um maestro coordenando diferentes instrumentos para compor uma sinfonia musical integrada e harmoniosa.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "compose_summary" {
+  REQUIRE {
+    COMPOSE ORDER_SUMMARY
+  }
+  FLOW {
+    SEQUENCE {
+      COMPOSE ORDER_SUMMARY
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "COMPOSE ORDER_SUMMARY",
+  "verb": "COMPOSE",
+  "target": "ORDER_SUMMARY"
+}`,
+    python: `from inp_sdk import Step
+
+# Consolida resumo de compra unificando etapas
+flow = Step("COMPOSE ORDER_SUMMARY")
+response = client.execute(flow)`
+  },
+  FETCH: {
+    name: 'FETCH',
+    category: 'Verbo',
+    desc: 'Realiza recuperação ativa de dados através de chamadas I/O de rede a APIs de parceiros, gateways remotos ou serviços externos (ex: cotação de câmbio, rastreio de frete).',
+    analogy: 'Como um mensageiro indo até a agência de correios buscar um pacote expedido por um fornecedor distante.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "fetch_rates" {
+  REQUIRE {
+    FETCH CURRENCY_RATES
+  }
+  FLOW {
+    SEQUENCE {
+      FETCH CURRENCY_RATES
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "FETCH CURRENCY_RATES",
+  "verb": "FETCH",
+  "target": "CURRENCY_RATES"
+}`,
+    python: `from inp_sdk import Step
+
+# Recupera taxas de câmbio atualizadas via API
+flow = Step("FETCH CURRENCY_RATES")
+response = client.execute(flow)`
+  },
+  STORE: {
+    name: 'STORE',
+    category: 'Verbo',
+    desc: 'Persiste fisicamente payloads brutos, logs de execução, estados transitórios ou cache em bancos de dados relacionais, Redis ou S3.',
+    analogy: 'Como guardar caixas de mercadorias no almoxarifado: o foco é armazenar o objeto com segurança para localização rápida futura.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "store_order" {
+  REQUIRE {
+    STORE ORDER_PAYLOAD
+  }
+  FLOW {
+    SEQUENCE {
+      STORE ORDER_PAYLOAD
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "STORE ORDER_PAYLOAD",
+  "verb": "STORE",
+  "target": "ORDER_PAYLOAD"
+}`,
+    python: `from inp_sdk import Step
+
+# Armazena o payload bruto no PostgreSQL
+flow = Step("STORE ORDER_PAYLOAD")
+response = client.execute(flow)`
+  },
+  CALCULATE: {
+    name: 'CALCULATE',
+    category: 'Verbo',
+    desc: 'Executa computação matemática pura, orçamentos, taxas ou regras determinísticas sobre variáveis numéricas sem depender de I/O externo ou gerar mutação de estado.',
+    analogy: 'Como uma calculadora financeira aplicando fórmulas de amortização e impostos sobre o valor base inserido.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "calc_tax" {
+  REQUIRE {
+    CALCULATE TAX_TOTAL
+  }
+  FLOW {
+    SEQUENCE {
+      CALCULATE TAX_TOTAL
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "CALCULATE TAX_TOTAL",
+  "verb": "CALCULATE",
+  "target": "TAX_TOTAL"
+}`,
+    python: `from inp_sdk import Step
+
+# Calcula taxas fiscais de forma determinística
+flow = Step("CALCULATE TAX_TOTAL")
+response = client.execute(flow)`
+  },
+  REFUND: {
+    name: 'REFUND',
+    category: 'Verbo',
+    desc: 'Estorna transações financeiras liquidadas anteriormente, devolvendo os valores à origem do pagador. Atua como ação de compensação essencial para o verbo EXECUTE PAYMENT no Padrão Saga.',
+    analogy: 'Como o comerciante processando a devolução do dinheiro na fatura do cliente após a anulação da compra.',
+    preset: 'dsl-resilience',
+    dsl: `INTENT "refund_payment" {
+  REQUIRE {
+    REFUND PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      REFUND PAYMENT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "REFUND PAYMENT",
+  "verb": "REFUND",
+  "target": "PAYMENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Estorna o valor cobrado do cartão
+flow = Step("REFUND PAYMENT")
+response = client.execute(flow)`
+  },
+  CANCEL: {
+    name: 'CANCEL',
+    category: 'Verbo',
+    desc: 'Interrompe formalmente a continuidade de pedidos, processos ativos ou reservas, mudando seu estado para CANCELADO e liberando recursos. Compensação para CREATE ou RESERVE.',
+    analogy: 'Como ligar para a transportadora e cancelar o pedido de coleta antes do despacho do caminhão.',
+    preset: 'dsl-resilience',
+    dsl: `INTENT "cancel_shipment" {
+  REQUIRE {
+    CANCEL SHIPMENT
+  }
+  FLOW {
+    SEQUENCE {
+      CANCEL SHIPMENT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "CANCEL SHIPMENT",
+  "verb": "CANCEL",
+  "target": "SHIPMENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Cancela a remessa de transporte antes do despacho
+flow = Step("CANCEL SHIPMENT")
+response = client.execute(flow)`
+  },
+  APPROVE: {
+    name: 'APPROVE',
+    category: 'Verbo',
+    desc: 'Registra aprovação formal de alçada de negócio, crédito ou parecer administrativo para pedidos sob quarentena ou compliance.',
+    analogy: 'Como o comitê de crédito aprovando o financiamento com chancela formal de liberação.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "approve_loan" {
+  REQUIRE {
+    APPROVE LOAN_PROPOSAL
+  }
+  FLOW {
+    SEQUENCE {
+      APPROVE LOAN_PROPOSAL
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "APPROVE LOAN_PROPOSAL",
+  "verb": "APPROVE",
+  "target": "LOAN_PROPOSAL"
+}`,
+    python: `from inp_sdk import Step
+
+# Aprova formalmente a proposta de crédito
+flow = Step("APPROVE LOAN_PROPOSAL")
+response = client.execute(flow)`
+  },
+  REJECT: {
+    name: 'REJECT',
+    category: 'Verbo',
+    desc: 'Recusa formalmente uma proposta ou solicitação que não cumpriu os critérios do negócio, encerrando a intenção em estado terminal de rejeição.',
+    analogy: 'Como a seguradora recusando a cobertura de um sinistro por não atender às cláusulas da apólice.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "reject_claim" {
+  REQUIRE {
+    REJECT INSURANCE_CLAIM
+  }
+  FLOW {
+    SEQUENCE {
+      REJECT INSURANCE_CLAIM
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "REJECT INSURANCE_CLAIM",
+  "verb": "REJECT",
+  "target": "INSURANCE_CLAIM"
+}`,
+    python: `from inp_sdk import Step
+
+# Rejeita formalmente o sinistro
+flow = Step("REJECT INSURANCE_CLAIM")
+response = client.execute(flow)`
+  },
+  CHECK: {
+    name: 'CHECK',
+    category: 'Verbo',
+    desc: 'Consulta o estado ou disponibilidade de um recurso de forma atômica e instantânea sem realizar alocações, reservas ou retenções. Use para checar estoque ou saúde do nó.',
+    analogy: 'Como olhar rapidamente a vitrine para confirmar se o tênis do seu número está exposto sem pedir para guardar.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "check_stock" {
+  REQUIRE {
+    CHECK STOCK
+  }
+  FLOW {
+    SEQUENCE {
+      CHECK STOCK
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "CHECK STOCK",
+  "verb": "CHECK",
+  "target": "STOCK"
+}`,
+    python: `from inp_sdk import Step
+
+# Checa disponibilidade de estoque instantânea
+flow = Step("CHECK STOCK")
+response = client.execute(flow)`
+  },
+  RESERVE: {
+    name: 'RESERVE',
+    category: 'Verbo',
+    desc: 'Aloca e retém temporariamente recursos (estoque, saldo ou assentos) com tempo de vida limitado (TTL) durante o checkout. Exige compensação com RELEASE se o pagamento falhar.',
+    analogy: 'Como pedir ao vendedor da loja para segurar a peça no balcão por 15 minutos enquanto você vai ao caixa pagar.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "reserve_stock" {
+  REQUIRE {
+    RESERVE STOCK
+  }
+  FLOW {
+    SEQUENCE {
+      RESERVE STOCK
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "RESERVE STOCK",
+  "verb": "RESERVE",
+  "target": "STOCK"
+}`,
+    python: `from inp_sdk import Step
+
+# Reserva unidades de produto com TTL
+flow = Step("RESERVE STOCK")
+response = client.execute(flow)`
+  },
+  RELEASE: {
+    name: 'RELEASE',
+    category: 'Verbo',
+    desc: 'Desbloqueia e devolve recursos retidos temporariamente pelo verbo RESERVE à disponibilidade geral. Ação de compensação direta no padrão Saga para reversão de estoque.',
+    analogy: 'Como o vendedor devolvendo a peça reservada para a prateleira da loja após o cliente desistir da compra.',
+    preset: 'dsl-resilience',
+    dsl: `INTENT "release_stock" {
+  REQUIRE {
+    RELEASE STOCK
+  }
+  FLOW {
+    SEQUENCE {
+      RELEASE STOCK
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "RELEASE STOCK",
+  "verb": "RELEASE",
+  "target": "STOCK"
+}`,
+    python: `from inp_sdk import Step
+
+# Liberta o estoque reservado de volta à prateleira
+flow = Step("RELEASE STOCK")
+response = client.execute(flow)`
+  },
+  SEND: {
+    name: 'SEND',
+    category: 'Verbo',
+    desc: 'Expede documentos, comprovantes ou payloads físicos/digitais diretamente ao destinatário (ex: enviar fatura por e-mail, enviar SMS com código de confirmação).',
+    analogy: 'Como postar uma carta registrada no correio destinada a uma pessoa específica.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "send_confirmation" {
+  REQUIRE {
+    SEND CONFIRMATION
+  }
+  FLOW {
+    SEQUENCE {
+      SEND CONFIRMATION
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "SEND CONFIRMATION",
+  "verb": "SEND",
+  "target": "CONFIRMATION"
+}`,
+    python: `from inp_sdk import Step
+
+# Envia recibo e confirmação ao comprador
+flow = Step("SEND CONFIRMATION")
+response = client.execute(flow)`
+  },
+  DISPATCH: {
+    name: 'DISPATCH',
+    category: 'Verbo',
+    desc: 'Aciona a execução de tarefas pesadas em segundo plano para workers assíncronos ou inicia o transporte de remessas físicas na logística.',
+    analogy: 'Como despachar a frota de caminhões da fábrica carregados de mercadorias rumo às cidades de entrega.',
+    preset: 'dsl-purchase',
+    dsl: `INTENT "dispatch_worker" {
+  REQUIRE {
+    DISPATCH BACKGROUND_WORKER
+  }
+  FLOW {
+    SEQUENCE {
+      DISPATCH BACKGROUND_WORKER
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "DISPATCH BACKGROUND_WORKER",
+  "verb": "DISPATCH",
+  "target": "BACKGROUND_WORKER"
+}`,
+    python: `from inp_sdk import Step
+
+# Despacha worker para processamento assíncrono
+flow = Step("DISPATCH BACKGROUND_WORKER")
+response = client.execute(flow)`
+  },
+  PUBLISH: {
+    name: 'PUBLISH',
+    category: 'Verbo',
+    desc: 'Emite eventos de domínio ou mensagens para barramentos pub/sub distribuídos (Kafka, RabbitMQ, Redis) para consumo por múltiplos microsserviços desacoplados.',
+    analogy: 'Como publicar um anúncio no jornal de circulação geral: qualquer leitor interessado pode consumir a notícia.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "publish_event" {
+  REQUIRE {
+    PUBLISH ORDER_EVENT
+  }
+  FLOW {
+    SEQUENCE {
+      PUBLISH ORDER_EVENT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "PUBLISH ORDER_EVENT",
+  "verb": "PUBLISH",
+  "target": "ORDER_EVENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Publica evento de conclusão no barramento Kafka
+flow = Step("PUBLISH ORDER_EVENT")
+response = client.execute(flow)`
+  },
+  ARCHIVE: {
+    name: 'ARCHIVE',
+    category: 'Verbo',
+    desc: 'Transfere dados inativos de tabelas de produção para armazenamento frio e imutável para cumprimento de retenção legal e auditoria fiscal (SOC2, ISO 27001).',
+    analogy: 'Como arquivar caixas de notas fiscais antigas no arquivo morto subterrâneo da empresa para guarda legal obrigatória.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "archive_logs" {
+  REQUIRE {
+    ARCHIVE AUDIT_LOGS
+  }
+  FLOW {
+    SEQUENCE {
+      ARCHIVE AUDIT_LOGS
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "ARCHIVE AUDIT_LOGS",
+  "verb": "ARCHIVE",
+  "target": "AUDIT_LOGS"
+}`,
+    python: `from inp_sdk import Step
+
+# Arquiva logs históricos de auditoria
+flow = Step("ARCHIVE AUDIT_LOGS")
+response = client.execute(flow)`
+  },
+  AUDIT: {
+    name: 'AUDIT',
+    category: 'Verbo',
+    desc: 'Inspeciona e valida a integridade de trilhas de auditoria forense, assinaturas criptográficas e conformidade das transações registradas.',
+    analogy: 'Como auditores externos conferindo os livros contábeis e registros de caixa para emitir parecer de conformidade e integridade.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "audit_trail" {
+  REQUIRE {
+    AUDIT TRANSACTION_TRAIL
+  }
+  FLOW {
+    SEQUENCE {
+      AUDIT TRANSACTION_TRAIL
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "AUDIT TRANSACTION_TRAIL",
+  "verb": "AUDIT",
+  "target": "TRANSACTION_TRAIL"
+}`,
+    python: `from inp_sdk import Step
+
+# Audita a trilha criptográfica de transações
+flow = Step("AUDIT TRANSACTION_TRAIL")
+response = client.execute(flow)`
   }
 };
 
@@ -3569,10 +4437,22 @@ function highlightCode(code, type) {
     // Strings
     html = html.replace(/("[^"]*")/g, '<span class="hl-string">$1</span>');
     // Keywords
-    const keywords = ['SEQUENCE', 'PARALLEL', 'CONDITION', 'RETRY', 'TIMEOUT', 'SCOPE', 'DEPENDENCY', 'ENCRYPT', 'DECRYPT'];
+    const keywords = ['SEQUENCE', 'PARALLEL', 'CONDITION', 'RETRY', 'TIMEOUT', 'SCOPE', 'DEPENDENCY', 'ENCRYPT', 'DECRYPT', 'INTENT', 'REQUIRE', 'CONTEXT', 'FLOW', 'OUTPUT'];
     keywords.forEach(kw => {
       const regex = new RegExp('\\b(' + kw + ')\\b', 'g');
       html = html.replace(regex, '<span class="hl-keyword">$1</span>');
+    });
+    // Canonical & Operational Verbs
+    const verbs = [
+      'CREATE', 'READ', 'UPDATE', 'DELETE', 'EXECUTE', 'PROCESS',
+      'ANALYZE', 'GENERATE', 'TRANSFER', 'VALIDATE', 'AUTHENTICATE', 'AUTHORIZE',
+      'NOTIFY', 'SYNC', 'ROUTE', 'COMPOSE', 'FETCH', 'STORE',
+      'CALCULATE', 'REFUND', 'CANCEL', 'APPROVE', 'REJECT',
+      'CHECK', 'RESERVE', 'RELEASE', 'SEND', 'DISPATCH', 'PUBLISH', 'ARCHIVE', 'AUDIT'
+    ];
+    verbs.forEach(vb => {
+      const regex = new RegExp('\\b(' + vb + ')\\b', 'g');
+      html = html.replace(regex, '<span class="hl-keyword" style="color: var(--secondary); font-weight: 700;">$1</span>');
     });
     // Capabilities
     html = html.replace(/\b(FETCH INVENTORY|EXECUTE PAYMENT|STORE ORDER|NOTIFY USER|VALIDATE USER)\b/g, '<span class="hl-capability">$1</span>');
@@ -3734,7 +4614,7 @@ function renderDictionarySidebar() {
       const item = document.createElement('div');
       item.className = `dict-sidebar-item${dictActiveTerm === key ? ' active' : ''}`;
       
-      const badgeClass = term.category === 'Segurança' ? 'type-security' : 'type-flow';
+      const badgeClass = term.category === 'Segurança' ? 'type-security' : (term.category === 'Verbo' ? 'type-verb' : 'type-flow');
       
       item.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
@@ -3765,7 +4645,7 @@ function renderDictionaryDetail() {
     return;
   }
 
-  const badgeClass = term.category === 'Segurança' ? 'type-security' : 'type-flow';
+  const badgeClass = term.category === 'Segurança' ? 'type-security' : (term.category === 'Verbo' ? 'type-verb' : 'type-flow');
   const activeCodeContent = term[dictActiveTab];
   const highlighted = highlightCode(activeCodeContent, dictActiveTab);
 
