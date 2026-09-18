@@ -49,7 +49,14 @@ export interface AuthTokenPayload {
  */
 export class AuthService {
   /** Chave secreta interna para assinatura dos tokens criptográficos */
-  private static readonly TOKEN_SECRET = process.env.INP_AUTH_SECRET || 'inp-master-auth-secret-key-salt-2026-distributed';
+  private static readonly TOKEN_SECRET: string = (() => {
+    const secret = process.env.INP_AUTH_SECRET;
+    // MEDIDA DE SEGURANÇA: Em produção, a ausência do segredo é um erro fatal que interrompe o arranque do servidor
+    if (!secret && process.env.NODE_ENV === 'production') {
+      throw new Error('[SEGURANÇA CRÍTICA] A variável de ambiente INP_AUTH_SECRET não está definida. O servidor não pode arrancar em modo de produção sem uma chave de assinatura segura.');
+    }
+    return secret || 'inp-master-auth-secret-key-salt-2026-distributed';
+  })();
 
   /**
    * @description Gera um hash criptográfico seguro a partir de uma palavra-passe em texto limpo utilizando scrypt.
@@ -222,6 +229,11 @@ export class AuthService {
    * @audit Atualiza a data de última utilização da chave para controlo de atividade.
    */
   static async authenticateApiKey(secretKey: string): Promise<{ user: User; apiKey: ApiKey } | null> {
+    // MEDIDA DE SEGURANÇA: Validação estrita de tipo e teto de comprimento para prevenir anomalias e sobrecarga
+    if (!secretKey || typeof secretKey !== 'string' || secretKey.trim().length === 0 || secretKey.length > 512) {
+      return null;
+    }
+
     try {
       const keyHash = crypto.createHash('sha256').update(secretKey.trim()).digest('hex');
       const apiKey = await ApiKeyRepository.findOne({

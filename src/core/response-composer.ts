@@ -65,10 +65,11 @@ export class ResponseComposer {
    * @security Escapa entidades de texto para mitigar riscos de injeção XML.
    */
   private toXML(result: ExecutionResult): string {
+    const outputStr = result.finalOutput !== undefined ? JSON.stringify(result.finalOutput) : '';
     let xml = `<?xml version="1.0"?>\n<response>\n`;
     xml += `  <status>${result.status}</status>\n`;
     xml += `  <execution_id>${result.id}</execution_id>\n`;
-    xml += `  <output>${this.escapeXml(JSON.stringify(result.finalOutput))}</output>\n`;
+    xml += `  <output>${this.escapeXml(outputStr)}</output>\n`;
     if (result.error) xml += `  <error>${this.escapeXml(result.error)}</error>\n`;
     xml += `</response>`;
     return xml;
@@ -81,7 +82,8 @@ export class ResponseComposer {
    * @returns {string} Resumo em formato de texto simples.
    */
   private toText(result: ExecutionResult): string {
-    return `Estado: ${result.status}\nSaída: ${JSON.stringify(result.finalOutput)}\nErro: ${result.error || 'nenhum'}`;
+    const outputStr = result.finalOutput !== undefined ? JSON.stringify(result.finalOutput) : 'nenhum';
+    return `Estado: ${result.status}\nSaída: ${outputStr}\nErro: ${result.error || 'nenhum'}`;
   }
 
   /**
@@ -95,17 +97,22 @@ export class ResponseComposer {
   }
 
   /**
-   * @description Escapa carateres especiais reservados da especificação XML (`<`, `>`, `&`).
+   * @description Escapa carateres especiais reservados da especificação XML (`<`, `>`, `&`, `"`, `'`).
    *
    * @param {string} str - Cadeia de caracteres a sanitizar.
    * @returns {string} Texto seguro com entidades XML substituídas.
    */
   private escapeXml(str: string): string {
-    return str.replace(/[<>&]/g, m => {
-      if (m === '<') return '&lt;';
-      if (m === '>') return '&gt;';
-      if (m === '&') return '&amp;';
-      return m;
+    if (!str || typeof str !== 'string') return '';
+    return str.replace(/[<>&"']/g, m => {
+      switch (m) {
+        case '<': return '&lt;';
+        case '>': return '&gt;';
+        case '&': return '&amp;';
+        case '"': return '&quot;';
+        case "'": return '&apos;';
+        default: return m;
+      }
     });
   }
 }

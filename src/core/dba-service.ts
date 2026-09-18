@@ -295,10 +295,51 @@ export class DBAService {
       throw new Error('A consulta SQL não pode estar vazia.');
     }
 
-    // Bloqueio rigoroso de comandos de destruição da infraestrutura
-    const forbiddenKeywords = ['DROP DATABASE', 'SHUTDOWN', 'ALTER SYSTEM', 'GRANT ALL', 'REVOKE ALL'];
+    // MEDIDA DE SEGURANÇA: Política de lista branca — apenas SELECT e EXPLAIN são admitidos.
+    // Bloqueia totalmente: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, GRANT, REVOKE, TRUNCATE, EXECUTE, CALL, COPY.
+    const upperCleaned = cleaned.toUpperCase();
+    if (!/^(SELECT|EXPLAIN)\s/i.test(cleaned)) {
+      await AuthService.logAudit({
+        userId: context?.userId,
+        userEmail: context?.email,
+        userRole: context?.role,
+        action: 'DBA_QUERY_BLOCKED',
+        resource: 'database:sandbox_query',
+        status: 'DENIED',
+        details: { query: cleaned, reason: 'Apenas instruções SELECT ou EXPLAIN são permitidas no modo sandbox.' }
+      });
+      throw new Error('Acesso Negado: O modo sandbox de diagnóstico DBA apenas permite instruções SELECT ou EXPLAIN.');
+    }
+
+    // MEDIDA DE SEGURANÇA: Impede múltiplas instruções encadeadas (SQL injection via ponto e vírgula)
+    // Remove o ponto e vírgula terminal (válido) e verifica se restam outros dentro da instrução
+    const withoutTrailingSemicolon = cleaned.replace(/;\s*$/, '');
+    if (withoutTrailingSemicolon.includes(';')) {
+      await AuthService.logAudit({
+        userId: context?.userId,
+        userEmail: context?.email,
+        userRole: context?.role,
+        action: 'DBA_QUERY_BLOCKED',
+        resource: 'database:sandbox_query',
+        status: 'DENIED',
+        details: { query: cleaned, reason: 'Múltiplas instruções SQL não são permitidas no modo sandbox.' }
+      });
+      throw new Error('Acesso Negado: Múltiplas instruções SQL encadeadas não são permitidas no modo sandbox.');
+    }
+
+    // MEDIDA DE SEGURANÇA: Bloqueio estrito de palavras-chave destrutivas, comandos administrativos e funções perigosas do PostgreSQL
+    // Bloqueia leitura arbitrária de ficheiros do servidor (pg_read_file), listagem de diretórios (pg_ls_dir),
+    // terminação de processos (pg_terminate_backend), injeção de Large Objects (lo_export/import) e consultas remotas (dblink).
+    const forbiddenKeywords = [
+      'DROP DATABASE', 'SHUTDOWN', 'ALTER SYSTEM', 'GRANT ALL', 'REVOKE ALL', 'COPY ',
+      'PG_SLEEP', '$$',
+      'PG_READ_FILE', 'PG_READ_BINARY_FILE', 'PG_WRITE_FILE', 'PG_LS_DIR', 'PG_STAT_FILE',
+      'PG_TERMINATE_BACKEND', 'PG_CANCEL_BACKEND',
+      'LO_EXPORT', 'LO_IMPORT', 'LO_UNLINK',
+      'DBLINK', 'CURRENT_SETTING', 'SET_CONFIG'
+    ];
     for (const kw of forbiddenKeywords) {
-      if (cleaned.toUpperCase().includes(kw)) {
+      if (upperCleaned.includes(kw)) {
         await AuthService.logAudit({
           userId: context?.userId,
           userEmail: context?.email,
@@ -313,7 +354,7 @@ export class DBAService {
     }
 
     const startTime = Date.now();
-    const rows = await AppDataSource.query(cleaned);
+    const rows = await AppDataSource.query(withoutTrailingSemicolon);
     const durationMs = Date.now() - startTime;
     const rowCount = Array.isArray(rows) ? rows.length : 1;
 

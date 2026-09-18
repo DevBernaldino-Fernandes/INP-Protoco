@@ -45,7 +45,13 @@ export class ZKVerifier {
    */
   public static verifyCommitment(value: any, salt: string, commitment: string): boolean {
     const generated = this.generateCommitment(value, salt);
-    return generated === commitment;
+    try {
+      const a = Buffer.from(generated, 'hex');
+      const b = Buffer.from(commitment, 'hex');
+      return a.length === b.length && crypto.timingSafeEqual(a, b);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -70,8 +76,8 @@ export class ZKVerifier {
   ): boolean {
     const commitmentKey = `${fieldName}_commitment`;
     const proofKey = `${fieldName}_proof`;
+    // SEGURANÇA: Regista apenas as chaves presentes no contexto, nunca os valores, para evitar fuga de dados confidenciais
     console.log('[ZK Verifier] Chaves de contexto recebidas para validação:', Object.keys(context || {}));
-    console.log('[ZK Verifier] Conteúdo de contexto para verificação ZK:', JSON.stringify(context, null, 2));
 
     const commitment = context[commitmentKey];
     const proof = context[proofKey];
@@ -101,10 +107,11 @@ export class ZKVerifier {
     // 2. Avaliação da condição relacional sobre a fronteira
     const isConstraintSatisfied = this.evaluate(proof.value, operator, boundary);
     if (!isConstraintSatisfied) {
-      throw new Error(`Erro de Verificação ZK: A restrição falhou. O valor do campo "${fieldName}" (${proof.value}) viola a condição "${operator} ${boundary}".`);
+      // SEGURANÇA: A mensagem de erro não inclui o valor real da prova para evitar fuga de dados confidenciais
+      throw new Error(`Erro de Verificação ZK: A restrição falhou. O campo "${fieldName}" viola a condição "${operator} ${boundary}".`);
     }
 
-    console.log(`[ZK Verifier] Restrição confirmada: O valor do campo "${fieldName}" cumpre a condição "${operator} ${boundary}".`);
+    console.log(`[ZK Verifier] Restrição confirmada: O campo "${fieldName}" cumpre a condição "${operator} ${boundary}".`);
     return true;
   }
 

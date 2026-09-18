@@ -35,8 +35,15 @@ export class MatchingEngine {
    */
   async matchIntent(intent: ParsedIntent): Promise<Map<string, ServiceMatch>> {
     const matches = new Map<string, ServiceMatch>();
-    for (const req of intent.requirements.capabilities) {
-      const best = await this.registry.findBestServiceForCapability(req);
+    const reqs = intent.requirements?.capabilities || [];
+    const resolved = await Promise.all(
+      reqs.map(async (req) => {
+        const best = await this.registry.findBestServiceForCapability(req);
+        return { req, best };
+      })
+    );
+
+    for (const { req, best } of resolved) {
       if (best) {
         matches.set(req, best);
       } else {
@@ -48,17 +55,18 @@ export class MatchingEngine {
 
   /**
    * @description Inspeciona previamente se todas as capacidades exigidas pela intenção possuem serviços ativos aptos a supri-las.
-   * Utilizado como barreira de segurança (*gatekeeper*) antes de dar início à orquestração.
+   * Executa a validação de todas as capacidades em paralelo com Promise.all para latência mínima.
    *
    * @param {ParsedIntent} intent - Intenção a ser testada.
    * @returns {Promise<boolean>} Verdadeiro se todos os requisitos tiverem pelo menos um serviço correspondente; falso caso contrário.
    * @security Previne a execução parcial de intenções que inevitavelmente falhariam por falta de capacidades.
    */
   async canFulfillIntent(intent: ParsedIntent): Promise<boolean> {
-    for (const req of intent.requirements.capabilities) {
-      const matches = await this.registry.findServicesForCapability(req);
-      if (matches.length === 0) return false;
-    }
-    return true;
+    const reqs = intent.requirements?.capabilities || [];
+    if (reqs.length === 0) return true;
+    const results = await Promise.all(
+      reqs.map(req => this.registry.findServicesForCapability(req))
+    );
+    return results.every(matches => matches.length > 0);
   }
 }

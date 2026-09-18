@@ -3,3 +3,5 @@ dist/
 .env
 .system_generated/
 *.log
+*.exe
+*.class

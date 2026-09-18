@@ -133,6 +133,9 @@ const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
  * @description Classe responsável pelo controlo de acesso, cálculo de permissões e autorização no INP.
  */
 export class AccessControl {
+  /** Cache em memória de permissões resolvidas por papel e nível DBA */
+  private static rolePermissionsCache = new Map<string, string[]>();
+
   /**
    * @description Calcula a lista completa e deduplicada de permissões para um utilizador com base no papel e nível DBA.
    *
@@ -143,6 +146,10 @@ export class AccessControl {
    * @audit Regista a determinação de autorizações aplicadas à sessão.
    */
   static getPermissionsForRole(role: UserRole, dbaLevel?: DbaLevel): string[] {
+    const key = `${role}:${dbaLevel || 1}`;
+    const cached = this.rolePermissionsCache.get(key);
+    if (cached) return cached;
+
     const basePermissions = [...(ROLE_PERMISSIONS[role] || [])];
 
     if (role === 'DBA') {
@@ -160,7 +167,9 @@ export class AccessControl {
       }
     }
 
-    return Array.from(new Set(basePermissions));
+    const result = Array.from(new Set(basePermissions));
+    this.rolePermissionsCache.set(key, result);
+    return result;
   }
 
   /**

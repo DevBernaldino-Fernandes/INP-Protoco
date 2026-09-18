@@ -20,9 +20,38 @@ import { ParsedIntent, IntentContext, IntentRequirement, IntentFlowStep, IntentO
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import Ajv from 'ajv';
+import crypto from 'crypto';
+import { NaturalLanguageSynthesizer } from './natural-language-synthesizer';
 
 // Instanciação do validador formal de esquemas JSON (AJV)
 const ajv = new Ajv({ allErrors: true });
+
+/**
+ * @description Cache em memória LRU de planos de intenção (AST) previamente compilados.
+ * Indexado pelo hash SHA-256 do texto DSL sem os valores variáveis do CONTEXT,
+ * permitindo reutilizar o grafo de execução quando apenas os dados de entrada mudam.
+ * Limite máximo: 500 entradas para conter o crescimento de memória.
+ * @security Garante que apenas estruturas inofensivas de grafo são armazenadas em cache (nunca dados de utilizador).
+ * @audit Reduz o tempo de análise de DSLs frequentes de dezenas de ms para sub-milissegundo.
+ */
+const intentPlanCache = new Map<string, {
+  flow: import('./types').IntentFlowStep[];
+  requirements: import('./types').IntentRequirement;
+  output: import('./types').IntentOutput;
+}>();
+
+const INTENT_PLAN_CACHE_MAX_SIZE = 500;
+
+/**
+ * @description Gera uma chave de cache normalizada a partir de um texto DSL,
+ * removendo o bloco CONTEXT (que contém dados variáveis por requisição).
+ * @param {string} dsl - Texto DSL da intenção.
+ * @returns {string} Hash SHA-256 da estrutura estática da DSL.
+ */
+function buildPlanCacheKey(dsl: string): string {
+  const withoutContext = dsl.replace(/CONTEXT\s*\{[^}]*\}/gs, 'CONTEXT {}');
+  return crypto.createHash('sha256').update(withoutContext.trim()).digest('hex');
+}
 
 /**
  * Esquema formal JSON Schema para validação estrita da estrutura da intenção
@@ -151,6 +180,157 @@ export class IntentParser {
   }
 
   /**
+   * @description Remove comentários de linha única (//) e em bloco preservando sequências literais dentro de strings.
+   * @param {string} text - Texto DSL bruto.
+   * @returns {string} Texto limpo sem comentários espúrios.
+   * @security Previne a mutilação de URLs (ex.: "https://...") ao ignorar falsos comentários "//" dentro de aspas.
+   */
+  private static stripComments(text: string): string {
+    let result = '';
+    let inDouble = false;
+    let inSingle = false;
+    let inTemplate = false;
+    let inBlockComment = false;
+    let inLineComment = false;
+    let escape = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      const next = text[i + 1];
+
+      if (inLineComment) {
+        if (c === '\n' || c === '\r') {
+          inLineComment = false;
+          result += c;
+        }
+        continue;
+      }
+
+      if (inBlockComment) {
+        if (c === '*' && next === '/') {
+          inBlockComment = false;
+          i++;
+        }
+        continue;
+      }
+
+      if (escape) {
+        result += c;
+        escape = false;
+        continue;
+      }
+
+      if (c === '\\') {
+        result += c;
+        escape = true;
+        continue;
+      }
+
+      if (!inSingle && !inTemplate && c === '"') {
+        inDouble = !inDouble;
+        result += c;
+        continue;
+      }
+
+      if (!inDouble && !inTemplate && c === "'") {
+        inSingle = !inSingle;
+        result += c;
+        continue;
+      }
+
+      if (!inDouble && !inSingle && c === '`') {
+        inTemplate = !inTemplate;
+        result += c;
+        continue;
+      }
+
+      if (!inDouble && !inSingle && !inTemplate) {
+        if (c === '/' && next === '/') {
+          inLineComment = true;
+          i++;
+          continue;
+        }
+        if (c === '/' && next === '*') {
+          inBlockComment = true;
+          i++;
+          continue;
+        }
+      }
+
+      result += c;
+    }
+
+    return result.trim();
+  }
+
+  /**
+   * @description Analisa e interpreta uma cadeia declarativa na DSL canónica do protocolo INP.
+   * Exemplo de sintaxe suportada:
+   * ```
+   * INTENT "comprar_artigo" {
+   *   CONTEXT { utilizador_id: "123", artigo_id: "P10" }
+   *   REQUIRE { EXECUTE PAYMENT }
+   *   FLOW { SEQUENCE { EXECUTE "payment" } }
+   *   OUTPUT { FORMAT "json" }
+   * }
+   * ```
+   *
+   * @param {string} dsl - Definição formal textual da intenção.
+   * @returns {ParsedIntent} Estrutura canónica validada com grafo de orquestração.
+   * @throws {Error} Caso falte o nome da intenção, existam violações de segurança ou dependências circulares.
+   * @security Valida e previne ciclos e chaves reservadas de protótipo.
+   * @audit Atribui um UUID v4 à intenção e arquiva o texto original para fins probatórios.
+   */
+  /**
+   * @description Executa a autocura sintática inteligente em definições DSL com pequenos desvios de formatação.
+   * Corrige automaticamente:
+   * - Chaves desbalanceadas (ex.: esqueceu de fechar o último `}`).
+   * - Aspas simples trocadas por aspas duplas no nome da intenção.
+   * - Aspas faltantes no nome da intenção.
+   *
+   * @param {string} dsl - Texto DSL bruto submetido.
+   * @returns {string} Texto DSL higienizado e sintaticamente reparado.
+   * @security Mantém o conteúdo estritamente intacto, balanceando apenas delimitadores sintáticos.
+   */
+  public repairSyntax(dsl: string): string {
+    if (!dsl || typeof dsl !== 'string') return dsl;
+
+    let repaired = dsl.trim();
+
+    // 1. Corrige declaração de INTENT sem aspas ou com aspas simples
+    repaired = repaired.replace(/INTENT\s+([a-zA-Z0-9_.-]+)\s*\{/i, 'INTENT "$1" {');
+    repaired = repaired.replace(/INTENT\s+'([a-zA-Z0-9_.-]+)'\s*\{/i, 'INTENT "$1" {');
+
+    // 2. Balanceamento inteligente de chaves { e }
+    let openBraces = 0;
+    let inString = false;
+    let quoteChar = '';
+
+    for (let i = 0; i < repaired.length; i++) {
+      const char = repaired[i];
+      const prev = i > 0 ? repaired[i - 1] : '';
+
+      if ((char === '"' || char === "'") && prev !== '\\') {
+        if (!inString) {
+          inString = true;
+          quoteChar = char;
+        } else if (char === quoteChar) {
+          inString = false;
+        }
+      } else if (!inString) {
+        if (char === '{') openBraces++;
+        else if (char === '}') openBraces--;
+      }
+    }
+
+    if (openBraces > 0) {
+      repaired += '\n' + '}'.repeat(openBraces);
+    }
+
+    return repaired;
+  }
+
+  /**
    * @description Analisa e interpreta uma cadeia declarativa na DSL canónica do protocolo INP.
    * Exemplo de sintaxe suportada:
    * ```
@@ -169,24 +349,84 @@ export class IntentParser {
    * @audit Atribui um UUID v4 à intenção e arquiva o texto original para fins probatórios.
    */
   parse(dsl: string): ParsedIntent {
-    // Remoção de comentários de linha única (//)
-    const clean = dsl.replace(/\/\/.*$/gm, '').trim();
-    const nameMatch = clean.match(/INTENT\s+"([^"]+)"/);
+    try {
+      return this.doParse(dsl);
+    } catch (err: unknown) {
+      // Tentativa de Autocura Sintática Nativa
+      const repaired = this.repairSyntax(dsl);
+      if (repaired !== dsl) {
+        try {
+          const result = this.doParse(repaired);
+          console.log(`[IntentParser] ✅ Autocura sintática aplicada com sucesso na DSL de "${result.name}".`);
+          return result;
+        } catch {
+          // Se mesmo após autocura sintática falhar, relança o erro original
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * @description Execução interna do pipeline de análise léxica e compilação do AST da intenção.
+   * @param {string} dsl - Definição textual limpa.
+   * @returns {ParsedIntent} Objeto da intenção compilada.
+   */
+  private doParse(dsl: string): ParsedIntent {
+    // Remoção de comentários consciente de strings (preserva URLs como "https://...")
+    const clean = IntentParser.stripComments(dsl);
+
+    const nameMatch = clean.match(/INTENT\s+["']?([a-zA-Z0-9_.-]+)["']?/i);
     if (!nameMatch) throw new Error('Declaração INP inválida: falta o nome da INTENT');
     const name = nameMatch[1];
 
+    const hasCanonicalFlow = /FLOW\s*\{/i.test(clean);
+    const hasSteps = /STEP\s+[a-zA-Z0-9_]+\s*:/i.test(clean) || /\bIF\b[\s\S]*?\bTHEN\b/i.test(clean);
+
+    // Se for formato declarativo baseado em passos (STEP <id>: <VERB> ou IF/THEN/ELSE)
+    if (!hasCanonicalFlow && hasSteps) {
+      const stepIntent = this.parseStepBased(clean, name, dsl);
+      this.detectCircularDependencies(stepIntent.flow);
+      return stepIntent;
+    }
+
+    // Verificação de cache de plano compilado (evita re-análise de fluxos idênticos)
+    const planKey = buildPlanCacheKey(clean);
+    const cachedPlan = intentPlanCache.get(planKey);
+
+    if (cachedPlan) {
+      return {
+        id: uuidv4(),
+        name,
+        verb: undefined,
+        context: this.parseContext(clean),
+        requirements: cachedPlan.requirements,
+        flow: cachedPlan.flow,
+        output: cachedPlan.output,
+        rawText: dsl,
+      };
+    }
+
     const flow = this.parseFlow(clean);
-    // Verificação de segurança contra impasses ou ciclos fechados de dependência no grafo
     this.detectCircularDependencies(flow);
+    const requirements = this.parseRequirements(clean);
+    const output = this.parseOutput(clean);
+
+    // Armazena o plano no cache com controlo de tamanho máximo
+    if (intentPlanCache.size >= INTENT_PLAN_CACHE_MAX_SIZE) {
+      const firstKey = intentPlanCache.keys().next().value;
+      if (firstKey) intentPlanCache.delete(firstKey);
+    }
+    intentPlanCache.set(planKey, { flow, requirements, output });
 
     return {
       id: uuidv4(),
       name,
       verb: undefined,
       context: this.parseContext(clean),
-      requirements: this.parseRequirements(clean),
+      requirements,
       flow,
-      output: this.parseOutput(clean),
+      output,
       rawText: dsl,
     };
   }
@@ -198,7 +438,17 @@ export class IntentParser {
    * @param {string} text - Frase submetida pelo utilizador (ex.: "Comprar 2 unidades do produto P10").
    * @returns {ParsedIntent} Objeto de intenção gerado com base nas regras heurísticas.
    */
-  parseNatural(text: string): ParsedIntent {
+  parseNatural(text: string, sessionId?: string): ParsedIntent {
+    try {
+      const { NaturalLanguageSynthesizer } = require('./natural-language-synthesizer');
+      const synthesized = NaturalLanguageSynthesizer.synthesize(text, sessionId);
+      if (synthesized && synthesized.flow && synthesized.flow.length > 0 && synthesized.flow[0].action !== 'EXECUTE DEFAULT') {
+        return synthesized;
+      }
+    } catch {
+      // Recorre às heurísticas locais
+    }
+
     const lower = text.toLowerCase();
     const context: any = {};
 
@@ -251,6 +501,27 @@ export class IntentParser {
         { type: 'SEQUENCE', action: 'STORE ORDER' },
         { type: 'SEQUENCE', action: 'NOTIFY USER' }
       ] }];
+    } else if (lower.includes('transferir') || lower.includes('transfer') || lower.includes('enviar fundos') || lower.includes('send funds')) {
+      name = 'transfer_funds';
+      capabilities = ['TRANSFER FUNDS', 'NOTIFY USER'];
+      flow = [{ type: 'SEQUENCE', steps: [
+        { type: 'SEQUENCE', action: 'TRANSFER FUNDS' },
+        { type: 'SEQUENCE', action: 'NOTIFY USER' }
+      ] }];
+    } else if (lower.includes('reembolsar') || lower.includes('refund') || lower.includes('reembolso')) {
+      name = 'refund_payment';
+      capabilities = ['REFUND PAYMENT', 'NOTIFY USER'];
+      flow = [{ type: 'SEQUENCE', steps: [
+        { type: 'SEQUENCE', action: 'REFUND PAYMENT' },
+        { type: 'SEQUENCE', action: 'NOTIFY USER' }
+      ] }];
+    } else if (lower.includes('cancelar') || lower.includes('cancel')) {
+      name = 'cancel_order';
+      capabilities = ['CANCEL ORDER', 'REFUND PAYMENT'];
+      flow = [{ type: 'SEQUENCE', steps: [
+        { type: 'SEQUENCE', action: 'CANCEL ORDER' },
+        { type: 'SEQUENCE', action: 'REFUND PAYMENT' }
+      ] }];
     } else if (lower.includes('pagar') || lower.includes('pay') || lower.includes('pagamento')) {
       name = 'process_payment';
       capabilities = ['EXECUTE PAYMENT'];
@@ -263,17 +534,36 @@ export class IntentParser {
         { type: 'SEQUENCE', action: 'STORE ORDER' },
         { type: 'SEQUENCE', action: 'NOTIFY USER' }
       ] }];
-    } else if (lower.includes('stock') || lower.includes('inventário')) {
+    } else if (lower.includes('reservar') || lower.includes('reserve')) {
+      name = 'reserve_stock';
+      capabilities = ['RESERVE STOCK'];
+      flow = [{ type: 'SEQUENCE', action: 'RESERVE STOCK' }];
+    } else if (lower.includes('stock') || lower.includes('inventário') || lower.includes('inventory')) {
       name = 'check_inventory';
       capabilities = ['FETCH INVENTORY'];
       flow = [{ type: 'SEQUENCE', action: 'FETCH INVENTORY' }];
-    } else if (lower.includes('notificar')) {
+    } else if (lower.includes('saldo') || lower.includes('balance')) {
+      name = 'query_balance';
+      capabilities = ['QUERY BALANCE'];
+      flow = [{ type: 'SEQUENCE', action: 'QUERY BALANCE' }];
+    } else if (lower.includes('relatório') || lower.includes('relatorio') || lower.includes('report') || lower.includes('gerar') || lower.includes('generate')) {
+      name = 'generate_report';
+      capabilities = ['GENERATE REPORT'];
+      flow = [{ type: 'SEQUENCE', action: 'GENERATE REPORT' }];
+    } else if (lower.includes('validar') || lower.includes('verificar') || lower.includes('verify') || lower.includes('identidade')) {
+      name = 'verify_identity';
+      capabilities = ['VERIFY IDENTITY'];
+      flow = [{ type: 'SEQUENCE', action: 'VERIFY IDENTITY' }];
+    } else if (lower.includes('notificar') || lower.includes('notify')) {
       name = 'send_notification';
       capabilities = ['NOTIFY USER'];
       flow = [{ type: 'SEQUENCE', action: 'NOTIFY USER' }];
     } else {
-      capabilities = ['EXECUTE ACTION'];
-      flow = [{ type: 'SEQUENCE', action: 'EXECUTE ACTION' }];
+      const syn = NaturalLanguageSynthesizer.synthesize(text);
+      name = syn.name;
+      capabilities = syn.requirements.capabilities;
+      flow = syn.flow;
+      Object.assign(context, syn.context);
     }
 
     const result = {
@@ -297,8 +587,26 @@ export class IntentParser {
   private parseContext(dsl: string): IntentContext {
     const content = this.extractBalancedBlock(dsl, 'CONTEXT');
     if (!content) return {};
+    return this.parsePropertiesString(content);
+  }
 
-    const ctx: IntentContext = {};
+  /** Limite máximo de profundidade de aninhamento para mitigar ataques de DoS por estouro de pilha */
+  private static readonly MAX_NESTED_DEPTH = 20;
+
+  /**
+   * @description Analisa uma cadeia de pares chave-valor (DSL de propriedades) com proteção contra Prototype Pollution e DoS.
+   * Suporta tipos primitivos, cadeias com aspas, arrays, objetos aninhados e blocos de verbos aninhados (ex.: FETCH { ... }).
+   *
+   * @param {string} content - Conteúdo textual do bloco de propriedades.
+   * @param {number} [depth=0] - Nível atual de profundidade de recursão sintática.
+   * @returns {Record<string, any>} Dicionário de propriedades estruturadas.
+   * @throws {Error} Se for detetada poluição de protótipo ou profundidade excessiva.
+   */
+  private parsePropertiesString(content: string, depth = 0): Record<string, any> {
+    if (depth > IntentParser.MAX_NESTED_DEPTH) {
+      throw new Error(`Violação de Segurança: Profundidade máxima de aninhamento de propriedades excedida (${IntentParser.MAX_NESTED_DEPTH} níveis).`);
+    }
+    const ctx: Record<string, any> = {};
     let i = 0;
     while (i < content.length) {
       while (i < content.length && /[\s,]/s.test(content[i])) {
@@ -306,7 +614,7 @@ export class IntentParser {
       }
       if (i >= content.length) break;
 
-      const keyMatch = content.substring(i).match(/^(\w+)\s*:/);
+      const keyMatch = content.substring(i).match(/^([a-zA-Z0-9_$-]+)\s*:/);
       if (!keyMatch) {
         i++;
         continue;
@@ -322,6 +630,8 @@ export class IntentParser {
       while (i < content.length && /\s/s.test(content[i])) {
         i++;
       }
+
+      if (i >= content.length) break;
 
       if (content[i] === '"' || content[i] === "'" || content[i] === '`') {
         const quoteChar = content[i];
@@ -387,9 +697,39 @@ export class IntentParser {
         try {
           ctx[key] = JSON.parse(rawVal);
         } catch (err) {
-          ctx[key] = rawVal;
+          if (startChar === '{') {
+            ctx[key] = this.parsePropertiesString(rawVal.slice(1, -1), depth + 1);
+          } else if (startChar === '[') {
+            try {
+              // Suporta sintaxe JSON relaxada com chaves não delimitadas por aspas e vírgulas finais
+              const relaxed = rawVal
+                .replace(/([{,]\s*)([a-zA-Z0-9_$-]+)\s*:/g, '$1"$2":')
+                .replace(/,\s*([\]}])/g, '$1');
+              ctx[key] = JSON.parse(relaxed);
+            } catch {
+              ctx[key] = rawVal;
+            }
+          } else {
+            ctx[key] = rawVal;
+          }
         }
       } else {
+        // Verifica se é uma declaração de verbo aninhado (ex.: FETCH { ... } ou MUTATE { ... })
+        const verbBlockMatch = content.substring(i).match(/^([A-Z_]+)\s*\{/);
+        if (verbBlockMatch) {
+          const nestedVerb = verbBlockMatch[1];
+          const braceIdx = content.indexOf('{', i);
+          const nestedResult = this.extractBalancedBody(content, braceIdx);
+          if (nestedResult !== null) {
+            ctx[key] = {
+              verb: nestedVerb,
+              ...this.parsePropertiesString(nestedResult.body, depth + 1)
+            };
+            i = nestedResult.endIdx + 1;
+            continue;
+          }
+        }
+
         let val = '';
         while (i < content.length && content[i] !== ',' && content[i] !== '\n' && content[i] !== '\r') {
           val += content[i];
@@ -400,6 +740,8 @@ export class IntentParser {
           ctx[key] = true;
         } else if (val === 'false') {
           ctx[key] = false;
+        } else if (val === 'null') {
+          ctx[key] = null;
         } else if (!isNaN(Number(val)) && val !== '') {
           ctx[key] = Number(val);
         } else {
@@ -408,6 +750,297 @@ export class IntentParser {
       }
     }
     return ctx;
+  }
+
+  /**
+   * @description Extrai com segurança o corpo de um bloco a partir da chaveta de abertura.
+   * @param {string} text - Texto fonte.
+   * @param {number} openBraceIdx - Índice do caractere '{'.
+   * @returns {{ body: string; endIdx: number } | null} Conteúdo e índice do fecho ou null.
+   */
+  private extractBalancedBody(text: string, openBraceIdx: number): { body: string; endIdx: number } | null {
+    if (openBraceIdx < 0 || openBraceIdx >= text.length || text[openBraceIdx] !== '{') {
+      return null;
+    }
+    let braceCount = 1;
+    let i = openBraceIdx + 1;
+    let inDouble = false;
+    let inSingle = false;
+    let inTemplate = false;
+    let escape = false;
+
+    while (i < text.length && braceCount > 0) {
+      const char = text[i];
+      if (escape) {
+        escape = false;
+        i++;
+        continue;
+      }
+      if (char === '\\') {
+        escape = true;
+        i++;
+        continue;
+      }
+      if (char === '"' && !inSingle && !inTemplate) inDouble = !inDouble;
+      else if (char === "'" && !inDouble && !inTemplate) inSingle = !inSingle;
+      else if (char === '`' && !inDouble && !inSingle) inTemplate = !inTemplate;
+      else if (!inDouble && !inSingle && !inTemplate) {
+        if (char === '{') braceCount++;
+        else if (char === '}') braceCount--;
+      }
+      if (braceCount === 0) break;
+      i++;
+    }
+
+    if (braceCount === 0) {
+      return {
+        body: text.substring(openBraceIdx + 1, i).trim(),
+        endIdx: i
+      };
+    }
+    return null;
+  }
+
+  /**
+   * @description Analisa intenções declarativas baseadas em passos (sintaxe STEP <id>: <VERB> { ... }),
+   * suportando cabeçalhos contratuais (TARGET, TIMEOUT, IDEMPOTENCY, SCHEMA) e orquestração de Saga.
+   *
+   * @param {string} clean - Texto DSL sem comentários.
+   * @param {string} name - Nome da intenção.
+   * @param {string} rawDsl - Texto DSL original para auditoria.
+   * @returns {ParsedIntent} Objeto estruturado com o grafo de fluxo canónico e capacidades resolvidas.
+   */
+  private parseStepBased(clean: string, name: string, rawDsl: string): ParsedIntent {
+    const context: any = {};
+
+    // 1. Extração de Cabeçalhos Contratuais (TARGET, TIMEOUT, IDEMPOTENCY)
+    const targetMatch = clean.match(/TARGET\s*:\s*["']?([^"'\r\n;]+)["']?/i);
+    if (targetMatch) context._target = targetMatch[1].trim();
+
+    const timeoutMatch = clean.match(/TIMEOUT\s*:\s*(\d+)(ms|s)?/i);
+    if (timeoutMatch) {
+      const val = parseInt(timeoutMatch[1], 10);
+      context._timeoutMs = timeoutMatch[2]?.toLowerCase() === 's' ? val * 1000 : val;
+    }
+
+    const idempMatch = clean.match(/IDEMPOTENCY\s*:\s*["']?([^"'\r\n;]+)["']?/i);
+    if (idempMatch) context._idempotency = idempMatch[1].trim();
+
+    // 2. Extração de bloco CONTEXT explícito se existir
+    const explicitContext = this.parseContext(clean);
+    if (explicitContext && Object.keys(explicitContext).length > 0) {
+      Object.assign(context, explicitContext);
+    }
+
+    const capabilities: string[] = [];
+    const steps: IntentFlowStep[] = [];
+
+    // 3. Extração e Análise de Passos (STEP <name>: <VERB> { ... })
+    const stepDeclRegex = /STEP\s+([a-zA-Z0-9_]+)\s*:\s*([a-zA-Z0-9_]+)\s*\{/gi;
+    let match;
+
+    while ((match = stepDeclRegex.exec(clean)) !== null) {
+      const stepName = match[1];
+      const verb = match[2].toUpperCase();
+      const openBraceIdx = match.index + match[0].length - 1;
+
+      const stepResult = this.extractBalancedBody(clean, openBraceIdx);
+      if (stepResult === null) continue;
+      const stepBody = stepResult.body;
+
+      stepDeclRegex.lastIndex = stepResult.endIdx + 1;
+
+      // Bloco PARALLEL
+      if (verb === 'PARALLEL') {
+        const subSteps: IntentFlowStep[] = [];
+        const innerVerbRegex = /([A-Z_]+)\s*\{/g;
+        let innerMatch;
+        while ((innerMatch = innerVerbRegex.exec(stepBody)) !== null) {
+          const innerVerb = innerMatch[1].toUpperCase();
+          if (['STEP', 'STEPS', 'CONTEXT'].includes(innerVerb)) continue;
+          const innerOpenIdx = innerMatch.index + innerMatch[0].length - 1;
+          const innerResult = this.extractBalancedBody(stepBody, innerOpenIdx);
+          if (innerResult !== null) {
+            innerVerbRegex.lastIndex = innerResult.endIdx + 1;
+            const innerParams = this.parsePropertiesString(innerResult.body);
+            const innerTarget = (innerParams.resource || innerParams.service || innerParams.target || 'DEFAULT').toUpperCase();
+            const innerAction = `${innerVerb} ${innerTarget}`;
+            subSteps.push({
+              type: 'SEQUENCE',
+              action: innerAction,
+              parameters: innerParams
+            });
+            capabilities.push(innerAction);
+            capabilities.push(`${innerVerb} *`);
+            capabilities.push(innerVerb);
+          }
+        }
+
+        steps.push({
+          type: 'PARALLEL',
+          name: stepName,
+          steps: subSteps
+        });
+        continue;
+      }
+
+      // Bloco CONDITIONAL
+      if (verb === 'CONDITIONAL') {
+        const condMatch = stepBody.match(/condition\s*:\s*["']?([^"',\r\n]+(?:\s*[!=><]=?\s*[^"',\r\n]+)?)["']?/i);
+        const condition = condMatch ? condMatch[1].trim() : '';
+
+        let thenAction = '';
+        const thenMatch = stepBody.match(/then\s*:\s*([A-Z_]+)/i);
+        if (thenMatch) {
+          const thenVerb = thenMatch[1].toUpperCase();
+          const thenIdx = stepBody.indexOf(thenMatch[0]) + thenMatch[0].length;
+          const thenResult = this.extractBalancedBody(stepBody, stepBody.indexOf('{', thenIdx));
+          const thenParams = thenResult ? this.parsePropertiesString(thenResult.body) : {};
+          const thenTarget = (thenParams.service || thenParams.target || 'DEFAULT').toUpperCase();
+          thenAction = `${thenVerb} ${thenTarget}`;
+          capabilities.push(thenAction);
+          capabilities.push(`${thenVerb} *`);
+          capabilities.push(thenVerb);
+        }
+
+        let elseAction = '';
+        const elseMatch = stepBody.match(/else\s*:\s*([A-Z_]+)/i);
+        if (elseMatch) {
+          const elseVerb = elseMatch[1].toUpperCase();
+          const elseIdx = stepBody.indexOf(elseMatch[0]) + elseMatch[0].length;
+          const elseResult = this.extractBalancedBody(stepBody, stepBody.indexOf('{', elseIdx));
+          const elseParams = elseResult ? this.parsePropertiesString(elseResult.body) : {};
+          const elseTarget = (elseParams.service || elseParams.target || 'DEFAULT').toUpperCase();
+          elseAction = `${elseVerb} ${elseTarget}`;
+          capabilities.push(elseAction);
+          capabilities.push(`${elseVerb} *`);
+          capabilities.push(elseVerb);
+        }
+
+        steps.push({
+          type: 'CONDITION',
+          name: stepName,
+          condition,
+          steps: thenAction ? [{ type: 'SEQUENCE', action: thenAction }] : [],
+          fallback: elseAction || undefined
+        });
+        continue;
+      }
+
+      // Verbos normais (AUTHENTICATE, COALESCE, MUTATE, REASON, ATTEST, VALIDATE, MEMOIZE, FETCH, etc.)
+      const params = this.parsePropertiesString(stepBody);
+      const targetName = (params.service || params.resource || params.target || params.provider || (context._target || 'DEFAULT')).toUpperCase();
+      const action = `${verb} ${targetName}`;
+
+      capabilities.push(action);
+      capabilities.push(`${verb} *`);
+      capabilities.push(verb);
+
+      // Bloco COMPENSATE
+      let compensate: { action: string; payload?: any } | undefined;
+      const compIdx = stepBody.search(/COMPENSATE\s*:/i);
+      if (compIdx !== -1) {
+        const braceOpen = stepBody.indexOf('{', compIdx);
+        if (braceOpen !== -1) {
+          const compResult = this.extractBalancedBody(stepBody, braceOpen);
+          if (compResult) {
+            const compProps = this.parsePropertiesString(compResult.body);
+            compensate = {
+              action: compProps.action ? `${compProps.action}`.toUpperCase() : `${action}_COMPENSATE`,
+              payload: compProps.payload || compProps
+            };
+          }
+        }
+      }
+
+      // Bloco RETRY
+      let retry: { maxAttempts?: number; backoff?: string } | undefined;
+      const retryIdx = stepBody.search(/RETRY\s*:/i);
+      if (retryIdx !== -1) {
+        const braceOpen = stepBody.indexOf('{', retryIdx);
+        if (braceOpen !== -1) {
+          const retryResult = this.extractBalancedBody(stepBody, braceOpen);
+          if (retryResult) {
+            const retryProps = this.parsePropertiesString(retryResult.body);
+            retry = {
+              maxAttempts: retryProps.maxAttempts ? Number(retryProps.maxAttempts) : 3,
+              backoff: retryProps.backoff || 'exponential'
+            };
+          }
+        }
+      }
+
+      steps.push({
+        type: 'SEQUENCE',
+        name: stepName,
+        action,
+        parameters: params,
+        compensate,
+        retry,
+        outputSchema: params.outputSchema || params.schema
+      });
+    }
+
+    // 4. Suporte a blocos IF <cond> THEN { ... } ELSE { ... } fora de STEP
+    const ifRegex = /IF\s+["']?([^"'{}\r\n]+)["']?\s+THEN\s*\{/gi;
+    let ifMatch;
+    while ((ifMatch = ifRegex.exec(clean)) !== null) {
+      const condition = ifMatch[1].trim();
+      const openBrace = ifMatch.index + ifMatch[0].length - 1;
+      const thenResult = this.extractBalancedBody(clean, openBrace);
+      let elseBody: string | null = null;
+      if (thenResult !== null) {
+        const rest = clean.substring(thenResult.endIdx + 1);
+        const elseMatch = rest.match(/^\s*ELSE\s*\{/i);
+        if (elseMatch) {
+          const elseOpen = thenResult.endIdx + 1 + rest.indexOf('{');
+          const elseResult = this.extractBalancedBody(clean, elseOpen);
+          if (elseResult) elseBody = elseResult.body;
+        }
+      }
+
+      const thenSteps: IntentFlowStep[] = [];
+      if (thenResult && thenResult.body) {
+        const innerStepsMatch = thenResult.body.match(/STEP\s+[a-zA-Z0-9_]+\s*:\s*([A-Z_]+)/i);
+        if (innerStepsMatch) {
+          const v = innerStepsMatch[1].toUpperCase();
+          thenSteps.push({ type: 'SEQUENCE', action: `${v} DEFAULT` });
+          capabilities.push(`${v} *`);
+        }
+      }
+
+      let elseFallback: string | undefined;
+      if (elseBody) {
+        const elseStepMatch = elseBody.match(/STEP\s+[a-zA-Z0-9_]+\s*:\s*([A-Z_]+)/i);
+        if (elseStepMatch) {
+          const v = elseStepMatch[1].toUpperCase();
+          elseFallback = `${v} DEFAULT`;
+          capabilities.push(`${v} *`);
+        }
+      }
+
+      steps.push({
+        type: 'CONDITION',
+        condition,
+        steps: thenSteps,
+        fallback: elseFallback
+      });
+    }
+
+    const resultFlow: IntentFlowStep[] = steps.length > 0
+      ? [{ type: 'SEQUENCE', steps }]
+      : [{ type: 'SEQUENCE', action: `${name.toUpperCase()} DEFAULT` }];
+
+    return {
+      id: uuidv4(),
+      name,
+      verb: undefined,
+      context,
+      requirements: { capabilities: Array.from(new Set(capabilities)) },
+      flow: resultFlow,
+      output: { format: 'json' },
+      rawText: rawDsl
+    };
   }
 
   /**
@@ -469,7 +1102,8 @@ export class IntentParser {
    * @description Extrai o bloco de fluxo principal `FLOW`.
    */
   private parseFlow(dsl: string): IntentFlowStep[] {
-    const match = dsl.match(/FLOW\s*\{([\s\S]+?)\}\s*(?=\n\s*\w+\s*\{|\}$)/);
+    const match = dsl.match(/FLOW\s*\{([\s\S]+?)\}\s*(?=(?:\r?\n\s*|\s+)(?:OUTPUT|REQUIRE|CONTEXT|METADATA)\s*\{|\}$)/i) ||
+                  dsl.match(/FLOW\s*\{([\s\S]+?)\}\s*(?=\n\s*\w+\s*\{|\}$)/);
     return match ? this.parseFlowBlock(match[1]) : [];
   }
 
@@ -508,13 +1142,13 @@ export class IntentParser {
         const { inner, next } = this.extractBlock(lines, i);
         steps.push({ type: 'CONDITION', condition, steps: this.parseFlowBlock(inner, depth + 1) });
         i = next;
-      } else if (line.startsWith('RETRY')) {
+      } else if ((line === 'RETRY' || line.startsWith('RETRY ') || line.startsWith('RETRY{')) && !line.startsWith('RETRY_')) {
         const retryMatch = line.match(/RETRY\s+(\d+)/);
         const retryCount = retryMatch ? parseInt(retryMatch[1], 10) : 3;
         const { inner, next } = this.extractBlock(lines, i);
         steps.push({ type: 'RETRY', retryCount, steps: this.parseFlowBlock(inner, depth + 1) });
         i = next;
-      } else if (line.startsWith('FALLBACK')) {
+      } else if (line.startsWith('FALLBACK') && line.includes('"')) {
         const fbMatch = line.match(/FALLBACK\s+"([^"]+)"/);
         steps.push({ type: 'FALLBACK', fallback: fbMatch ? fbMatch[1] : '' });
         i++;
@@ -530,12 +1164,10 @@ export class IntentParser {
         const { inner, next } = this.extractBlock(lines, i);
         steps.push({ type: 'SCOPE', action: 'CONFIDENTIAL', steps: this.parseFlowBlock(inner, depth + 1) });
         i = next;
-      } else if (line.startsWith('VERIFY')) {
+      } else if (line.startsWith('VERIFY') && line.match(/VERIFY\s+"([^"]+)"\s*(>=|<=|>|<|==)\s*([0-9.]+)/i)) {
         const verifyMatch = line.match(/VERIFY\s+"([^"]+)"\s*(>=|<=|>|<|==)\s*([0-9.]+)/i);
         if (verifyMatch) {
           steps.push({ type: 'SCOPE', action: `VERIFY ${verifyMatch[1]} ${verifyMatch[2]} ${verifyMatch[3]}` });
-        } else {
-          steps.push({ type: 'SCOPE', action: line });
         }
         i++;
       } else if (line.startsWith('DEPENDENCY')) {
@@ -617,16 +1249,16 @@ export class IntentParser {
    * @security Filtra antecipadamente o texto com `detectPromptInjection`.
    * @audit Regista erros de validação estrutural do retorno de IA.
    */
-  async parseNaturalAsync(text: string, activeCapabilities: string[] = []): Promise<ParsedIntent> {
+  async parseNaturalAsync(text: string, activeCapabilities: string[] = [], sessionId?: string): Promise<ParsedIntent> {
     if (IntentParser.detectPromptInjection(text)) {
       console.warn(`[Analisador] Tentativa de injeção de prompt intercetada! Texto: "${text}". A recorrer a heurísticas locais defensivas.`);
-      return this.parseNatural(text);
+      return this.parseNatural(text, sessionId);
     }
 
     const apiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
     if (!apiKey) {
       console.log('[Analisador] Nenhuma chave de API de LLM encontrada. A utilizar analisador heurístico local.');
-      return this.parseNatural(text);
+      return this.parseNatural(text, sessionId);
     }
 
     try {

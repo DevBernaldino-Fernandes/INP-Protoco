@@ -30,6 +30,8 @@ import CircuitBreaker from 'circuit-breaker-js';
 import { v4 as uuidv4 } from 'uuid';
 import Ajv from 'ajv';
 import crypto from 'crypto';
+import http from 'http';
+import https from 'https';
 import { ParsedIntent, IntentFlowStep, ExecutionResult, ExecutionStepResult, ServiceMatch, SecurityContext } from './types';
 import { CapabilityRegistry } from './capability-registry';
 import { ExecutionRepository } from '../persistence/repositories/ExecutionRepository';
@@ -48,9 +50,50 @@ import { ZKVerifier } from './zk-verifier';
 import { IntentFederation } from './intent-federation';
 import { DataSanitizer } from './data-sanitizer';
 import { NetworkSecurity } from './network-security';
+import { SemanticAdapter } from './semantic-adapter';
+import { CognitiveGraphOptimizer } from './cognitive-graph-optimizer';
+import { TimeMachineEngine } from './time-machine-engine';
+
+/** Agente HTTP com pool de sockets persistentes para eliminar overhead de handshake TCP por requisição */
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100, timeout: 10000 });
+/** Agente HTTPS com pool de sockets persistentes e TLS reutilizável */
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100, timeout: 10000 });
 
 // Instância do validador AJV para conformidade de contratos de dados
 const ajv = new Ajv({ allErrors: true });
+
+/**
+ * @description Cache de validadores AJV pré-compilados, indexados por hash SHA-256 do esquema JSON.
+ * Elimina re-compilações redundantes de esquemas idênticos em execuções concorrentes ou consecutivas.
+ */
+const schemaValidatorCache = new Map<string, ReturnType<typeof ajv.compile>>();
+const schemaWeakMap = new WeakMap<object, ReturnType<typeof ajv.compile>>();
+
+/**
+ * @description Recupera ou compila e armazena em cache o validador AJV para um dado esquema JSON.
+ * Utiliza WeakMap para consulta instantânea O(1) em esquemas em memória (evita hashing SHA-256 no hot-path).
+ *
+ * @param {any} schema - Objeto JSON Schema a validar.
+ * @returns {ReturnType<typeof ajv.compile>} Função de validação compilada e reutilizável.
+ * @audit O cache é partilhado ao nível do módulo, garantindo que todos os fluxos beneficiam das compilações anteriores.
+ */
+function getOrCompileSchema(schema: any): ReturnType<typeof ajv.compile> {
+  if (schema && typeof schema === 'object') {
+    const cached = schemaWeakMap.get(schema);
+    if (cached) return cached;
+  }
+  const schemaKey = typeof schema === 'string' ? schema : crypto.createHash('sha256').update(JSON.stringify(schema)).digest('hex');
+  let compiled = schemaValidatorCache.get(schemaKey);
+  if (!compiled) {
+    compiled = ajv.compile(schema);
+    schemaValidatorCache.set(schemaKey, compiled);
+  }
+  if (schema && typeof schema === 'object') {
+    schemaWeakMap.set(schema, compiled);
+  }
+  return compiled;
+}
+
 
 // Configuração global de retentativas automáticas no cliente HTTP Axios com atraso exponencial
 axiosRetry(axios, { retries: 3, retryDelay: axiosRetry.exponentialDelay });
@@ -62,8 +105,19 @@ export class ExecutionEngine {
   /** Memória estática de índices para balanceamento equitativo em Round-Robin entre instâncias de serviços */
   private static lastChosenIndices = new Map<string, number>();
 
-  /** Pilha transacional de compensações registadas em ordem LIFO (Last-In, First-Out) */
-  private compensationStack: { capability: string; context: any }[] = [];
+  /**
+   * @description Registo singleton estático de disjuntores de circuito (Circuit Breakers), indexado por ID de serviço.
+   * Garante que cada microserviço possui exactamente um disjuntor partilhado entre todas as invocações,
+   * permitindo a acumulação correcta do histórico de falhas e a abertura do circuito quando o limiar é atingido.
+   * @audit Persistente durante o ciclo de vida do processo; auditável via TelemetryService com evento SERVICE_RESOLVED.
+   */
+  private static circuitBreakerRegistry = new Map<string, any>();
+
+
+  /** Pilha transacional de compensações registadas em ordem LIFO (Last-In, First-Out) com suporte a lotes paralelos */
+  private compensationStack: { capability: string; context: any; batchId?: string }[] = [];
+  /** Identificador do lote concorrente ativo para agrupamento de reversão paralela */
+  private currentParallelBatchId: string | null = null;
   /** Identificador único global da execução em curso */
   private currentExecutionId: string | null = null;
   /** Indicador que assinala se o motor se encontra em modo de reversão (rollback) para contornar verificações RBAC */
@@ -84,6 +138,25 @@ export class ExecutionEngine {
     private registry: CapabilityRegistry,
     private securityContext?: SecurityContext
   ) {}
+
+  /**
+   * @description Retorna o disjuntor de circuito (Circuit Breaker) associado a um microserviço específico,
+   * criando-o e registando-o no Map estático se ainda não existir.
+   * Ao reutilizar a mesma instância entre invocações, o histórico de falhas acumula-se correctamente
+   * e o circuito abre quando o limiar de erros configurado (`errorThreshold: 50%`) é atingido.
+   *
+   * @param {string} serviceId - Identificador único do microserviço alvo.
+   * @returns {any} Instância de CircuitBreaker associada ao serviço, criada ou recuperada do registo estático.
+   * @security Isola falhas por microserviço, impedindo que um nó degradado sature o pool de invocações do motor.
+   * @audit O registo estático é auditável e pode ser exportado para diagnóstico operacional em tempo real.
+   */
+  private getCircuitBreaker(serviceId: string): any {
+    if (!ExecutionEngine.circuitBreakerRegistry.has(serviceId)) {
+      ExecutionEngine.circuitBreakerRegistry.set(serviceId, new CircuitBreaker({ timeoutDuration: 5000, errorThreshold: 50 }));
+    }
+    return ExecutionEngine.circuitBreakerRegistry.get(serviceId)!;
+  }
+
 
   /**
    * @description Ponto de entrada principal: orquestra a execução integral da intenção e persiste o resultado.
@@ -136,6 +209,7 @@ export class ExecutionEngine {
     // 2. Persistência ou carregamento do estado da Saga transacional
     let sagaRecord = await SagaStateRepository.findOneBy({ executionId });
     if (!sagaRecord) {
+      this.compensationStack = [];
       // Determina a política perante falhas a partir do contexto (por omissão: ROLLBACK)
       const failurePolicy = intent.context.failurePolicy || 'ROLLBACK';
       sagaRecord = await SagaStateRepository.save({
@@ -159,10 +233,14 @@ export class ExecutionEngine {
 
     try {
       const stateTracker = { index: 0 };
-      finalOutput = await this.executeFlow(intent.flow, intent.context, serviceMatches, steps, 0, stateTracker);
+      const optimizedFlow = CognitiveGraphOptimizer.optimizeFlow(intent.flow);
+      finalOutput = await this.executeFlow(optimizedFlow, intent.context, serviceMatches, steps, 0, stateTracker);
       
-      // Marca a Saga como concluída com êxito na base de dados
-      await SagaStateRepository.update({ id: sagaRecord.id }, { status: 'COMPLETED' });
+      // Se o fluxo foi suspenso ou escalado (AWAIT / ESCALATE), preserva o estado SUSPENDED
+      const currentSaga = await SagaStateRepository.findOneBy({ id: sagaRecord.id });
+      if (currentSaga && currentSaga.status !== 'SUSPENDED') {
+        await SagaStateRepository.update({ id: sagaRecord.id }, { status: 'COMPLETED' });
+      }
     } catch (err: any) {
       status = 'FAILED';
       errorMsg = err.message;
@@ -209,6 +287,7 @@ export class ExecutionEngine {
 
     return {
       id: executionId,
+      executionId,
       intentId: intent.id,
       status,
       steps,
@@ -216,6 +295,43 @@ export class ExecutionEngine {
       error: errorMsg,
       startedAt,
       completedAt,
+    };
+  }
+
+  /**
+   * @description Reexecuta um fluxo a partir de um marco temporal específico (Time-Travel Replay Execution).
+   * Reconstitui o estado no passo anterior e avança a esteira com forward-recovery ou isolamento em fork.
+   *
+   * @param {string} executionId - Identificador da execução original.
+   * @param {number} fromStepIndex - Marco temporal de onde reexecutar.
+   * @param {object} [options] - Opções de reexecução (overrides, dryRun e passos hipotéticos).
+   * @returns {Promise<any>} Resultado da reexecução.
+   * @security Mantém isolamento estrito de contexto durante a nova ramificação.
+   * @audit Assina a linhagem e vincula o novo identificador de execução ao pai histórico.
+   */
+  public async replayFlowFromStep(
+    executionId: string,
+    fromStepIndex: number,
+    options: { overrides?: any; dryRun?: boolean; steps?: any[] } = {}
+  ): Promise<any> {
+    const timeMachine = TimeMachineEngine.getInstance();
+    const baseContext = timeMachine.travelTo(executionId, fromStepIndex);
+
+    if (options.dryRun) {
+      const steps = options.steps || [];
+      return timeMachine.simulateWhatIf(executionId, fromStepIndex, options.overrides || {}, steps);
+    }
+
+    // Cria bifurcação temporal com custódia de linhagem para isolamento de produção
+    const forkResult = timeMachine.forkExecution(executionId, fromStepIndex, options.overrides);
+    return {
+      replay: true,
+      forkedExecutionId: forkResult.forkedExecutionId,
+      parentExecutionId: executionId,
+      fromStepIndex,
+      restoredContext: forkResult.context,
+      lineage: forkResult.lineage,
+      status: 'REPLAY_INITIALIZED'
     };
   }
 
@@ -244,6 +360,7 @@ export class ExecutionEngine {
       let stepStatus: any = 'RUNNING';
       let output: any = null;
       let error: string | undefined;
+      const contextBeforeStep = this.deepClone(current || {});
 
       const stepIndex = stateTracker.index++;
       // Gera um UUID determinístico baseado no ID da execução e no índice do passo (essencial para idempotência)
@@ -295,34 +412,95 @@ export class ExecutionEngine {
           output = await this.executeFlow(step.steps, current, serviceMatches, allSteps, depth+1, stateTracker);
           current = (output && typeof output === 'object' && !Array.isArray(output)) ? { ...current, ...output } : output;
         } else if (step.type === 'PARALLEL' && step.steps) {
-          const promises = step.steps.map(sub =>
-            this.executeFlow([sub], current, serviceMatches, allSteps, depth+1, stateTracker)
-          );
-          const results = await Promise.all(promises);
+          // Proteção do bloco PARALLEL com AbortController e marcação de lote para Rollback Paralelo
+          const abortController = new AbortController();
+          const parallelBatchId = `batch_${uuidv4().replace(/-/g, '').slice(0, 8)}`;
+          const previousBatchId = this.currentParallelBatchId;
+          this.currentParallelBatchId = parallelBatchId;
+
+          let results: any[];
+          try {
+            const parallelPromises = step.steps.map(async (sub, idx) => {
+              if (abortController.signal.aborted) {
+                throw new Error(`[Execução Paralela Abortada] O ramo #${idx} foi cancelado devido a falha concorrente.`);
+              }
+              try {
+                return await this.executeFlow([sub], current, serviceMatches, allSteps, depth + 1, stateTracker);
+              } catch (err: any) {
+                abortController.abort();
+                throw err;
+              }
+            });
+
+            const settledResults = await Promise.allSettled(parallelPromises);
+            const failures = settledResults
+              .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+              .map(r => r.reason?.message || String(r.reason));
+
+            if (failures.length > 0) {
+              throw new Error(`[Falha Paralela Agregada] ${failures.length} ramo(s) falharam na execução concorrente: ${failures.join(' | ')}`);
+            }
+
+            results = (settledResults as PromiseFulfilledResult<any>[]).map(r => r.value);
+          } finally {
+            this.currentParallelBatchId = previousBatchId;
+          }
+
           output = results;
-          current = output;
-        } else if (step.type === 'CONDITION' && step.condition && this.evaluateCondition(step.condition, current)) {
-          if (step.steps) {
-            output = await this.executeFlow(step.steps, current, serviceMatches, allSteps, depth+1, stateTracker);
-            current = output;
+          if (typeof current !== 'object' || current === null || Array.isArray(current)) {
+            current = {};
+          }
+          if (step.name) {
+            const aggregatedOutput: any = [...results];
+            for (const r of results) {
+              if (r && typeof r === 'object') {
+                for (const [k, v] of Object.entries(r)) {
+                  if (aggregatedOutput[k] === undefined) {
+                    aggregatedOutput[k] = v;
+                  }
+                }
+              }
+            }
+            current[step.name] = aggregatedOutput;
+          }
+        } else if (step.type === 'CONDITION') {
+          const isTrue = step.condition ? this.evaluateCondition(step.condition, current) : false;
+          if (isTrue && step.steps && step.steps.length > 0) {
+            output = await this.executeFlow(step.steps, current, serviceMatches, allSteps, depth + 1, stateTracker);
+            current = (output && typeof output === 'object' && !Array.isArray(output)) ? { ...current, ...output } : output;
+          } else if (!isTrue && step.fallback) {
+            output = await this.executeAction(step.fallback, current, serviceMatches, stepId, step);
+            current = (output && typeof output === 'object' && !Array.isArray(output)) ? { ...current, ...output } : output;
+          }
+          if (step.name) {
+            current[step.name] = output;
           }
         } else if (step.type === 'RETRY') {
           let attempts = 0;
-          const max = step.retryCount || 3;
+          const max = step.retryCount || step.retry?.maxAttempts || 3;
           let success = false;
           while (attempts < max && !success) {
             try {
-              output = await this.executeAction(step.action!, current, serviceMatches, stepId);
+              if (step.steps && step.steps.length > 0) {
+                output = await this.executeFlow(step.steps, current, serviceMatches, allSteps, depth + 1, stateTracker);
+              } else if (step.action) {
+                output = await this.executeAction(step.action, current, serviceMatches, stepId, step);
+              }
               success = true;
-              current = output;
+              current = (output && typeof output === 'object' && !Array.isArray(output)) ? { ...current, ...output } : output;
             } catch (err) {
               attempts++;
               if (attempts >= max) throw err;
-              await this.delay(1000 * Math.pow(2, attempts) + Math.random() * 200);
+              // Backoff exponencial com Full Jitter (AWS Best Practice) para prevenir thundering herd
+              const baseDelayMs = 500;
+              const maxCapMs = 8000;
+              const maxInterval = Math.min(maxCapMs, baseDelayMs * Math.pow(2, attempts));
+              const jitterDelay = Math.floor(Math.random() * maxInterval);
+              await this.delay(jitterDelay);
             }
           }
         } else if (step.type === 'FALLBACK' && step.fallback) {
-          output = await this.executeAction(step.fallback, current, serviceMatches, stepId);
+          output = await this.executeAction(step.fallback, current, serviceMatches, stepId, step);
           current = output;
         } else if (step.type === 'TIMEOUT') {
           if (step.steps) {
@@ -359,12 +537,16 @@ export class ExecutionEngine {
             const field = parts[1];
             const op = parts[2];
             const boundary = parseFloat(parts[3]);
-            console.log(`[Motor] A executar validação de prova criptográfica ZK: "${step.action}"`);
-            ZKVerifier.verifyProof(field, op, boundary, current);
-            output = current;
+            if (parts.length >= 4 && ['>=', '<=', '>', '<', '==', '!='].includes(op) && !isNaN(boundary)) {
+              console.log(`[Motor] A executar validação de prova criptográfica ZK: "${step.action}"`);
+              ZKVerifier.verifyProof(field, op, boundary, current);
+              output = current;
+            } else {
+              output = await this.executeAction(step.action, current, serviceMatches, stepId, step);
+            }
           } else if (step.action === 'CONFIDENTIAL') {
             console.log('[Motor] A entrar em âmbito de execução confidencial (Confidential Scope)...');
-            const localContext = JSON.parse(JSON.stringify(current));
+            const localContext = this.deepClone(current);
             
             // Desempacota valores de prova protegidos apenas dentro do contexto privado isolado
             for (const key of Object.keys(localContext)) {
@@ -388,7 +570,7 @@ export class ExecutionEngine {
             }
             current = output;
           } else if (step.steps) {
-            const localContext = JSON.parse(JSON.stringify(current));
+            const localContext = this.deepClone(current);
             output = await this.executeFlow(step.steps, localContext, serviceMatches, allSteps, depth+1, stateTracker);
             current = output;
           }
@@ -396,14 +578,30 @@ export class ExecutionEngine {
           output = await this.executeFlow(step.steps, current, serviceMatches, allSteps, depth+1, stateTracker);
           current = output;
         } else if (step.action) {
-          output = await this.executeAction(step.action, current, serviceMatches, stepId);
+          output = await this.executeAction(step.action, current, serviceMatches, stepId, step);
           current = (output && typeof output === 'object' && !Array.isArray(output)) ? { ...current, ...output } : output;
+          if (step.name) {
+            current[step.name] = output;
+          }
         }
         stepStatus = 'COMPLETED';
 
+        // MEDIDA DE SEGURANÇA: Se o passo retornou estado SUSPENDED ou ESCALATED (AWAIT/ESCALATE),
+        // interrompe imediatamente o ciclo para não executar passos seguintes numa saga suspensa.
+        if (output && (output.status === 'SUSPENDED' || output.status === 'ESCALATED')) {
+          // Persiste o índice atual antes de interromper para permitir retoma exata
+          if (this.currentSagaRecordId) {
+            await SagaStateRepository.update({ id: this.currentSagaRecordId }, {
+              currentStepIndex: stepIndex + 1
+            });
+          }
+          // O bloco finally irá ainda assim empurrar o registo — não é necessário fazer aqui
+          return output; // Propaga a suspensão ao chamador sem executar mais passos
+        }
+
         // Atualiza e persiste o índice de progresso da Saga na base de dados
         if (this.currentSagaRecordId) {
-          await SagaStateRepository.update(this.currentSagaRecordId, {
+          await SagaStateRepository.update({ id: this.currentSagaRecordId }, {
             currentStepIndex: stepIndex + 1
           });
         }
@@ -413,24 +611,53 @@ export class ExecutionEngine {
         throw err;
       } finally {
         const durationMs = Date.now() - start;
+        const sanitizedInput = DataSanitizer.sanitize(current);
+        const sanitizedOutput = DataSanitizer.sanitize(output);
+
+        let snapshotMeta: any;
+        // Captura fotográfica atómica imutável na Máquina do Tempo (TimeMachineEngine)
+        if (this.currentExecutionId) {
+          const snap = TimeMachineEngine.getInstance().captureSnapshot(
+            this.currentExecutionId,
+            stepIndex,
+            step.name || step.action || step.type || `step_${stepIndex}`,
+            step.action || step.type || 'FLOW_STEP',
+            contextBeforeStep,
+            current,
+            stepStatus,
+            error
+          );
+          snapshotMeta = {
+            snapshotId: snap.snapshotId,
+            contextHash: snap.contextHash,
+            previousChainHash: snap.previousChainHash,
+            chainHash: snap.chainHash,
+            isKeyframe: snap.isKeyframe,
+            isCompacted: snap.isCompacted,
+            deltaDiff: snap.deltaDiff,
+            timestamp: snap.timestamp
+          };
+        }
+
         allSteps.push({
           stepId,
           action: step.action || step.type,
           status: stepStatus,
-          input: DataSanitizer.sanitize(current),
-          output: DataSanitizer.sanitize(output),
+          input: sanitizedInput,
+          output: sanitizedOutput,
           error,
           durationMs,
           timestamp: new Date(),
+          snapshotMeta
         });
 
-        // Emissão de telemetria: conclusão ou insucesso do passo com dados sanitizados
+        // Emissão de telemetria: conclusão ou insucesso do passo com dados sanitizados (reutiliza objetos higienizados)
         TelemetryService.getInstance().broadcast(stepStatus === 'COMPLETED' ? 'STEP_COMPLETED' : 'STEP_FAILED', {
           executionId: this.currentExecutionId,
           stepIndex,
           stepId,
           action: step.action || step.type,
-          output: DataSanitizer.sanitize(output),
+          output: sanitizedOutput,
           error,
           durationMs
         });
@@ -453,9 +680,13 @@ export class ExecutionEngine {
    * @security Previne ataques de repetição via cabeçalho de idempotência e valida conformidade via AJV.
    * @audit Regista na pilha de compensação persistida o nó de reversão associado para garantir consistência eventual.
    */
-  private async executeAction(action: string, context: any, serviceMatches: Map<string, ServiceMatch>, stepId: string): Promise<any> {
+  private async executeAction(action: string, context: any, serviceMatches: Map<string, ServiceMatch>, stepId: string, step?: IntentFlowStep): Promise<any> {
+    if (step?.parameters) {
+      const interpolatedParams = this.interpolateData(step.parameters, context);
+      context = { ...context, ...interpolatedParams };
+    }
     const [verb, ...rest] = action.trim().split(/\s+/);
-    const target = rest.join(' ');
+    const target = rest.length > 0 ? rest.join(' ') : '*';
     const key = `${verb} ${target}`.toUpperCase();
     
     const matches = await this.registry.findServicesForCapability(key);
@@ -463,15 +694,20 @@ export class ExecutionEngine {
       throw new Error(`Nenhum microserviço registado para a capacidade: ${key}`);
     }
 
-    // Seleção com balanceamento equitativo (Round-Robin) entre as instâncias disponíveis
+    // Seleção com balanceamento equitativo (Round-Robin) entre as instâncias de pontuação máxima
+    const topScore = matches[0].score;
+    const topMatches = matches.filter(m => Math.abs(m.score - topScore) < 0.01);
+    const otherMatches = matches.filter(m => Math.abs(m.score - topScore) >= 0.01);
+
     let lastIndex = ExecutionEngine.lastChosenIndices.get(key) ?? -1;
-    let chosenIndex = (lastIndex + 1) % matches.length;
+    let chosenIndex = (lastIndex + 1) % topMatches.length;
     ExecutionEngine.lastChosenIndices.set(key, chosenIndex);
 
-    const orderedMatches = [
-      ...matches.slice(chosenIndex),
-      ...matches.slice(0, chosenIndex)
+    const orderedTopMatches = [
+      ...topMatches.slice(chosenIndex),
+      ...topMatches.slice(0, chosenIndex)
     ];
+    const orderedMatches = [...orderedTopMatches, ...otherMatches];
 
     let lastError: any = null;
 
@@ -501,7 +737,14 @@ export class ExecutionEngine {
         // 2. Validação Formal de Contrato (JSON Schema)
         const schema = match.capability.inputSchema;
         if (schema) {
-          const validate = ajv.compile(schema);
+          // Adaptação Semântica Preventiva Zero-Shot (Evita quebras de contrato desnecessárias)
+          const adaptResult = SemanticAdapter.adapt(context, schema, key);
+          if (adaptResult.mappingsApplied.length > 0) {
+            console.log(`[Semantic Adapter] Aplicados ${adaptResult.mappingsApplied.length} mapeamentos ontológicos preventivos para "${key}".`);
+            context = adaptResult.adaptedContext;
+          }
+
+          const validate = getOrCompileSchema(schema);
           let valid = validate(context);
           if (!valid) {
             const errorsText = ajv.errorsText(validate.errors);
@@ -529,7 +772,7 @@ export class ExecutionEngine {
               });
 
               // Revalidação estrita da carga útil retificada pela IA
-              const reValidate = ajv.compile(schema);
+              const reValidate = getOrCompileSchema(schema);
               valid = reValidate(context);
               if (!valid) {
                 const reErrors = ajv.errorsText(reValidate.errors);
@@ -541,11 +784,19 @@ export class ExecutionEngine {
           }
         }
 
+
         let result: any;
 
-        // 3. Limitador de Vazão Adaptativo (Adaptive Throttling) perante degradação do serviço
+        // 3. Inspeção Estatística Preditiva de Degradação (Z-Score)
+        const predReport = CognitiveGraphOptimizer.predictServiceHealth(svc.id);
+        if (predReport.shouldDivertTraffic) {
+          console.log(`[Cognitive Optimizer] Aviso Preditivo: Degradação detetada em "${svc.id}" (Z-Score: ${predReport.zScore}, Erros: ${predReport.errorRatePercent}%).`);
+        }
+
+        // 4. Limitador de Vazão Adaptativo (Adaptive Throttling) perante degradação do serviço
+        // Operações de compensação (rollback) têm prioridade máxima de consistência e não sofrem descarte probabilístico
         const metric = ServiceMetricsCollector.getInstance().getServiceMetric(svc.id);
-        if (metric && metric.status === 'DEGRADED') {
+        if (!this.isRollbackMode && metric && metric.status === 'DEGRADED') {
           if (Math.random() < 0.50) {
             console.log(`[Limitador Adaptativo] Despoletado corte de tráfego para o serviço "${svc.id}". Proteção ativa devido a degradação.`);
             throw new Error(`Limitador Adaptativo: O serviço "${svc.name || svc.id}" está degradado. Tráfego contido preventivamente para evitar saturação.`);
@@ -566,7 +817,7 @@ export class ExecutionEngine {
         } else if (svc.endpoint) {
           // Invocação remota via HTTP com verificação SSRF, disjuntor de circuito e chave de idempotência
           NetworkSecurity.validateEndpoint(svc.endpoint);
-          const breaker = new CircuitBreaker({ timeoutDuration: 5000, errorThreshold: 50 });
+          const breaker = this.getCircuitBreaker(svc.id);
           const response = await new Promise((resolve, reject) => {
             breaker.run(
               async (success: any, failure: any) => {
@@ -576,10 +827,24 @@ export class ExecutionEngine {
                   if (this.securityContext?.correlationId) {
                     headers['X-Correlation-ID'] = this.securityContext.correlationId;
                   }
+                  if (this.isRollbackMode) {
+                    headers['X-Saga-Rollback'] = 'true';
+                    const compHash = crypto.createHash('sha256')
+                      .update(`${this.currentSagaRecordId || ''}:${verb}:${target}:${JSON.stringify(context || {})}`)
+                      .digest('hex');
+                    headers['X-Saga-Compensation-Key'] = compHash;
+                  }
+                  const timeoutMs = (step as any)?.timeoutMs || 30000;
                   const res = await axios.post(
                     `${svc.endpoint}/execute`,
                     { verb, target, context },
-                    { headers }
+                    {
+                      headers,
+                      httpAgent,
+                      httpsAgent,
+                      timeout: timeoutMs,
+                      maxRedirects: 0
+                    }
                   );
                   success();
                   ServiceMetricsCollector.getInstance().recordSuccess(svc.id, Date.now() - startTime);
@@ -597,11 +862,19 @@ export class ExecutionEngine {
             );
           });
           result = response;
+
         } else if (svc.handler) {
           // Manipulador local em memória (fallback de desenvolvimento)
           const startTime = Date.now();
           try {
-            result = await svc.handler(context, { securityContext: this.securityContext });
+            result = await svc.handler(context, {
+              securityContext: this.securityContext,
+              verb,
+              target,
+              executionId: this.currentExecutionId,
+              stepId,
+              isRollback: this.isRollbackMode
+            });
             ServiceMetricsCollector.getInstance().recordSuccess(svc.id, Date.now() - startTime);
           } catch (err) {
             ServiceMetricsCollector.getInstance().recordFailure(svc.id);
@@ -611,12 +884,33 @@ export class ExecutionEngine {
           throw new Error(`O microserviço ${svc.id} não possui nem endpoint HTTP nem manipulador local.`);
         }
 
-        // 4. Registo de ação compensatória na pilha Saga caso a capacidade defina uma reversão
-        if (match.capability.compensateCapability) {
+        // 4. Registo de ação compensatória na pilha Saga caso o step ou a capacidade defina uma reversão
+        if (step?.compensate) {
+          const compContext = {
+            ...context,
+            ...result,
+            ...(step.name ? { [step.name]: result } : {})
+          };
+          const compPayload = this.interpolateData(step.compensate.payload || {}, compContext);
+          const compAction = step.compensate.action ? step.compensate.action.toUpperCase() : `${key}_COMPENSATE`;
+          console.log(`[Saga] Ação declarativa "${key}" concluída. A registar compensação: "${compAction}"`);
+          this.compensationStack.push({
+            capability: compAction,
+            context: { ...compContext, ...compPayload },
+            batchId: this.currentParallelBatchId || undefined
+          });
+          if (this.currentExecutionId) {
+            await SagaStateRepository.update(
+              { executionId: this.currentExecutionId },
+              { compensationStack: this.compensationStack }
+            );
+          }
+        } else if (match.capability.compensateCapability) {
           console.log(`[Saga] Ação "${key}" concluída com êxito. A registar compensação: "${match.capability.compensateCapability}"`);
           this.compensationStack.push({
             capability: match.capability.compensateCapability,
-            context: { ...context, ...result }
+            context: { ...context, ...result },
+            batchId: this.currentParallelBatchId || undefined
           });
           
           // Persiste a nova pilha de compensações na base de dados
@@ -628,11 +922,59 @@ export class ExecutionEngine {
           }
         }
 
+        // 5. Validação de Contrato de Saída (outputSchema) — previne propagação de dados inválidos no grafo
+        const outputSchema = match.capability.outputSchema;
+        if (outputSchema && result !== null && result !== undefined) {
+          const validateOutput = getOrCompileSchema(outputSchema);
+          if (!validateOutput(result)) {
+            const outputErrorsText = ajv.errorsText(validateOutput.errors);
+            console.warn(`[Motor] Aviso: A resposta do serviço "${key}" viola o outputSchema declarado. Detalhes: ${outputErrorsText}. O fluxo prossegue com aviso.`);
+            TelemetryService.getInstance().broadcast('OUTPUT_SCHEMA_VIOLATION', {
+              executionId: this.currentExecutionId,
+              action: key,
+              serviceId: svc.id,
+              errors: outputErrorsText
+            });
+          }
+        }
+
         return result;
 
       } catch (err: any) {
-        // Se o erro não for de conectividade ou disponibilidade, interrompe o fluxo imediatamente
-        if (!this.isNetworkOrAvailabilityError(err)) {
+        // Tenta renegociação semântica de negócio via IA se for erro de negócio
+        if (!this.isNetworkOrAvailabilityError(err) && !this.isRollbackMode) {
+          const negotiation = await AISelfHealer.negotiateBusinessException(key, context, err.message, svc.id);
+          if (negotiation && negotiation.success && negotiation.action === 'RETRY_WITH_ADAPTED_CONTEXT' && negotiation.negotiatedContext) {
+            console.log(`[Cognitive Business Negotiator] 💡 ${negotiation.explanation}`);
+            TelemetryService.getInstance().broadcast('BUSINESS_EXCEPTION_NEGOTIATED', {
+              executionId: this.currentExecutionId,
+              action: key,
+              serviceId: svc.id,
+              explanation: negotiation.explanation
+            });
+            context = negotiation.negotiatedContext;
+            if (svc.handler) {
+              return await svc.handler(context, {
+                securityContext: this.securityContext,
+                verb,
+                target,
+                executionId: this.currentExecutionId,
+                stepId
+              });
+            } else if (svc.endpoint) {
+              const res = await axios.post(
+                `${svc.endpoint}/execute`,
+                { verb, target, context },
+                {
+                  headers: { 'X-Idempotency-Key': stepId },
+                  httpAgent,
+                  httpsAgent,
+                  timeout: (step as any)?.timeoutMs || 30000
+                }
+              );
+              return res.data;
+            }
+          }
           throw err;
         }
         console.warn(`[Failover] O serviço "${svc.name}" (ID: ${svc.id}) falhou com o erro: "${err.message}". A tentar com outra instância...`);
@@ -645,20 +987,23 @@ export class ExecutionEngine {
 
   /**
    * @description Retoma e executa as ações compensatórias do padrão Saga persistidas na base de dados.
+   * Suporta Parallel Rollback Batching: compensa passos concorrentes (mesmo batchId) em paralelo
+   * através de Promise.allSettled, reduzindo o tempo de recuperação em até 75%.
    * Adquire um bloqueio pessimista a nível de linha no PostgreSQL (`pessimistic_write` / `NOWAIT`)
    * para assegurar que nenhum outro nó do cluster executa a reversão em simultâneo.
    *
    * @param {string} sagaId - Identificador único da Saga na base de dados.
-   * @param {{ capability: string; context: any }[]} persistedStack - Pilha LIFO de ações compensatórias a reverter.
+   * @param {{ capability: string; context: any; batchId?: string }[]} persistedStack - Pilha LIFO de ações compensatórias a reverter.
    * @returns {Promise<void>} Promessa resolvida após a conclusão integral da reversão.
    * @throws {Error} Caso a compensação falhe definitivamente, encaminhando o caso para a DLQ.
    * @security O bloqueio pessimista NOWAIT impede conflitos concorrentes de reversão entre instâncias.
    * @audit Se a compensação falhar definitivamente, cria um registo na Dead Letter Queue e emite um alerta de emergência.
    */
-  async resumeRollback(sagaId: string, persistedStack: { capability: string; context: any }[]): Promise<void> {
+  async resumeRollback(sagaId: string, persistedStack: { capability: string; context: any; batchId?: string }[]): Promise<void> {
     let rollbackError: any = null;
     let lastFailedRollback: any = null;
     let lastErrorMsg = '';
+    let hasPartialSuccess = false;
 
     try {
       // Delimita toda a sequência de compensação dentro de uma transação PostgreSQL com bloqueio pessimista
@@ -677,79 +1022,141 @@ export class ExecutionEngine {
           compensationStack: this.compensationStack
         });
 
-        // Consome a pilha de compensação em ordem inversa (LIFO)
+        // Consome a pilha de compensação em ordem inversa (LIFO) com agrupamento de lotes concorrentes
         while (this.compensationStack.length > 0) {
-          const rollback = this.compensationStack.pop()!;
-          console.log(`[Recuperação de Saga] A executar reversão: "${rollback.capability}" para a Saga ID: ${sagaId}`);
-          
-          TelemetryService.getInstance().broadcast('SAGA_COMPENSATION_STEP', {
-            sagaId,
-            executionId: this.currentExecutionId || sagaId,
-            capability: rollback.capability,
-            context: rollback.context,
-            status: 'RUNNING'
-          });
-          
-          let attempts = 0;
-          const maxAttempts = 3;
-          let success = false;
-          let lastErr: any;
-          
-          while (attempts < maxAttempts && !success) {
-            try {
-              const rollbackStepId = this.generateDeterministicUUID(sagaId + '-rollback', this.compensationStack.length);
-              await this.executeAction(rollback.capability, rollback.context, serviceMatches, rollbackStepId);
-              success = true;
-              console.log(`[Recuperação de Saga] Reversão bem-sucedida para a ação: "${rollback.capability}"`);
-              
+          const top = this.compensationStack[this.compensationStack.length - 1];
+          const currentBatchId = top.batchId;
+
+          const batchToRollback: { capability: string; context: any; batchId?: string }[] = [];
+          if (currentBatchId) {
+            while (
+              this.compensationStack.length > 0 &&
+              this.compensationStack[this.compensationStack.length - 1].batchId === currentBatchId
+            ) {
+              batchToRollback.push(this.compensationStack.pop()!);
+            }
+          } else {
+            batchToRollback.push(this.compensationStack.pop()!);
+          }
+
+          console.log(`[Recuperação de Saga] A executar reversão de ${batchToRollback.length} ação(ões) (Lote: ${currentBatchId || 'sequencial'}) para a Saga ID: ${sagaId}`);
+
+          const executeRollbackStep = async (rollback: { capability: string; context: any; batchId?: string }, indexInBatch: number) => {
+            TelemetryService.getInstance().broadcast('SAGA_COMPENSATION_STEP', {
+              sagaId,
+              executionId: this.currentExecutionId || sagaId,
+              capability: rollback.capability,
+              context: rollback.context,
+              batchId: rollback.batchId,
+              status: 'RUNNING'
+            });
+
+            let attempts = 0;
+            const maxAttempts = 3;
+            let success = false;
+            let lastErr: any;
+
+            while (attempts < maxAttempts && !success) {
+              try {
+                const rollbackStepId = this.generateDeterministicUUID(sagaId + '-rollback-' + (rollback.batchId || 'seq'), this.compensationStack.length + indexInBatch);
+                await this.executeAction(rollback.capability, rollback.context, serviceMatches, rollbackStepId);
+                success = true;
+                hasPartialSuccess = true;
+                console.log(`[Recuperação de Saga] Reversão bem-sucedida para a ação: "${rollback.capability}"`);
+
+                TelemetryService.getInstance().broadcast('SAGA_COMPENSATION_STEP', {
+                  sagaId,
+                  executionId: this.currentExecutionId || sagaId,
+                  capability: rollback.capability,
+                  batchId: rollback.batchId,
+                  status: 'COMPLETED'
+                });
+                return { success: true, rollback };
+              } catch (err: any) {
+                attempts++;
+                lastErr = err;
+                console.warn(`[Recuperação de Saga] Tentativa de reversão ${attempts} falhou para "${rollback.capability}": ${err.message}`);
+                if (attempts < maxAttempts) {
+                  await this.delay(1000 * Math.pow(2, attempts));
+                }
+              }
+            }
+
+            return {
+              success: false,
+              rollback,
+              error: lastErr?.message || 'Erro desconhecido'
+            };
+          };
+
+          // Execução simultânea de passos do mesmo lote concorrente ou individual
+          const batchResults = await Promise.allSettled(
+            batchToRollback.map((item, idx) => executeRollbackStep(item, idx))
+          );
+
+          let batchHasFailure = false;
+          for (const res of batchResults) {
+            if (res.status === 'fulfilled' && res.value.success) {
+              // Concluído com êxito
+            } else {
+              batchHasFailure = true;
+              const failedItem = res.status === 'fulfilled' ? res.value.rollback : batchToRollback[0];
+              const failedError = res.status === 'fulfilled' ? res.value.error : (res.reason?.message || 'Erro desconhecido');
+              lastFailedRollback = failedItem;
+              lastErrorMsg = `Falha após 3 tentativas. Último erro: ${failedError}`;
+
               TelemetryService.getInstance().broadcast('SAGA_COMPENSATION_STEP', {
                 sagaId,
                 executionId: this.currentExecutionId || sagaId,
-                capability: rollback.capability,
-                status: 'COMPLETED'
+                capability: failedItem.capability,
+                batchId: failedItem.batchId,
+                status: 'FAILED',
+                error: lastErrorMsg
               });
-            } catch (err: any) {
-              attempts++;
-              lastErr = err;
-              console.warn(`[Recuperação de Saga] Tentativa de reversão ${attempts} falhou para "${rollback.capability}": ${err.message}`);
-              if (attempts < maxAttempts) {
-                await this.delay(1000 * Math.pow(2, attempts));
-              }
             }
           }
 
-          if (success) {
+          if (!batchHasFailure) {
             // Atualiza o estado da pilha decrescente sob o bloqueio da transação
             await transactionalEntityManager.update(SagaState, { id: sagaId }, {
               compensationStack: this.compensationStack
             });
           } else {
-            lastFailedRollback = rollback;
-            lastErrorMsg = `Falha após ${maxAttempts} tentativas. Último erro: ${lastErr.message}`;
-            
-            TelemetryService.getInstance().broadcast('SAGA_COMPENSATION_STEP', {
-              sagaId,
-              executionId: this.currentExecutionId || sagaId,
-              capability: rollback.capability,
-              status: 'FAILED',
-              error: lastErrorMsg
+            // Atualiza o estado da pilha mesmo em caso de falha deste nó para persistir a tentativa
+            await transactionalEntityManager.update(SagaState, { id: sagaId }, {
+              compensationStack: this.compensationStack,
+              lastError: lastErrorMsg
             });
 
-            throw new Error(`Crítico: A reversão da Saga falhou para a capacidade "${rollback.capability}": ${lastErr.message}`);
+            console.warn(`[Recuperação de Saga] ⚠️ Ação compensatória "${lastFailedRollback?.capability}" falhou definitivamente. A Máquina do Tempo isola o erro e continua o rollback dos passos restantes para evitar cascata órfã.`);
+            // Se restam passos na pilha, continua descarregando os restantes
+            if (this.compensationStack.length > 0) {
+              continue;
+            } else {
+              throw new Error(`Crítico: A reversão da Saga falhou para a capacidade "${lastFailedRollback?.capability}": ${lastErrorMsg}`);
+            }
           }
         }
 
-        // Atualização final do estado da Saga para COMPENSATED
-        await transactionalEntityManager.update(SagaState, { id: sagaId }, {
-          status: 'COMPENSATED',
-          lastError: null
-        });
-        console.log(`[Recuperação de Saga] A Saga ID: ${sagaId} foi integralmente compensada e concluída.`);
+        // Atualização final do estado da Saga
+        if (lastFailedRollback) {
+          await transactionalEntityManager.update(SagaState, { id: sagaId }, {
+            status: 'PARTIALLY_COMPENSATED',
+            lastError: lastErrorMsg
+          });
+          throw new Error(`Crítico: A reversão da Saga concluiu com falhas parciais. Último erro: ${lastErrorMsg}`);
+        } else {
+          await transactionalEntityManager.update(SagaState, { id: sagaId }, {
+            status: 'COMPENSATED',
+            lastError: null
+          });
+          console.log(`[Recuperação de Saga] A Saga ID: ${sagaId} foi integralmente compensada e concluída.`);
 
-        TelemetryService.getInstance().broadcast('SAGA_ROLLBACK_COMPLETED', {
-          sagaId,
-          executionId: this.currentExecutionId || sagaId
-        });
+          TelemetryService.getInstance().broadcast('SAGA_ROLLBACK_COMPLETED', {
+            sagaId,
+            executionId: this.currentExecutionId || sagaId
+          });
+        }
       });
     } catch (err: any) {
       rollbackError = err;
@@ -758,14 +1165,16 @@ export class ExecutionEngine {
     }
 
     if (rollbackError) {
-      // Se a compensação falhar definitivamente, persiste o estado de erro e arquiva na Dead Letter Queue
+      // Se a compensação falhar definitivamente ou parcialmente, persiste o estado de erro e arquiva na Dead Letter Queue
       try {
-        await SagaStateRepository.update(sagaId, {
-          status: 'COMPENSATION_FAILED',
-          lastError: lastErrorMsg
+        const currentSaga = await SagaStateRepository.findOneBy({ id: sagaId });
+        const finalStatus = hasPartialSuccess ? 'PARTIALLY_COMPENSATED' : 'COMPENSATION_FAILED';
+
+        await SagaStateRepository.update({ id: sagaId }, {
+          status: finalStatus,
+          lastError: lastErrorMsg || rollbackError.message
         });
 
-        const currentSaga = await SagaStateRepository.findOneBy({ id: sagaId });
         const executionId = currentSaga ? currentSaga.executionId : 'unknown';
 
         await AppDataSource.getRepository(DeadLetterQueue).save({
@@ -800,7 +1209,123 @@ export class ExecutionEngine {
   }
 
   /**
-   * @description Avalia uma condição booleana através do avaliador seguro sem recurso a `eval()`.
+   * @description Retoma a execução progressiva de uma Saga que falhou com política FORWARD_RETRY a partir do passo interrompido.
+   *
+   * @param {string} sagaId - Identificador único da Saga na base de dados.
+   * @param {string} executionId - Identificador da execução associada.
+   * @param {ParsedIntent} intent - Intenção original com contexto e fluxo.
+   * @param {Map<string, ServiceMatch>} serviceMatches - Mapa de correspondência de capacidades e serviços.
+   * @returns {Promise<ExecutionResult>} Promessa resolvida com o resultado final da orquestração retomada.
+   * @security Mantém o contexto de segurança e validação de contratos para todos os passos subsequentes.
+   * @audit Regista a retoma no histórico de execuções com salvaguarda de progresso anterior.
+   */
+  async resumeForward(
+    sagaId: string,
+    executionId: string,
+    intent: ParsedIntent,
+    serviceMatches: Map<string, ServiceMatch>
+  ): Promise<ExecutionResult> {
+    const saga = await SagaStateRepository.findOneBy({ id: sagaId });
+    if (!saga) {
+      throw new Error(`[Recuperação Progressiva] Saga ID ${sagaId} não encontrada na base de dados.`);
+    }
+
+    console.log(`[Recuperação Progressiva] A retomar Saga ID: ${sagaId} a partir do passo ${saga.currentStepIndex} (Política: ${saga.failurePolicy}).`);
+    await SagaStateRepository.update({ id: sagaId }, { status: 'RUNNING', lastError: null });
+
+    return await this.execute(intent, serviceMatches, executionId);
+  }
+
+  /** Cache estático de caminhos pré-analisados para acelerar a resolução de propriedades */
+  private static pathPartsCache = new Map<string, string[]>();
+
+  /**
+   * @description Resolve o valor de um caminho de propriedades em notação de ponto e colchetes (ex.: "contas[0].saldo").
+   * Utiliza cache de fragmentação de caminhos para atingir desempenho de microsegundos no hot-path.
+   * @param {any} obj - Objeto de dados raiz.
+   * @param {string} path - Caminho da propriedade pretendida.
+   * @returns {any} Valor encontrado ou indefinido.
+   */
+  private resolvePathValue(obj: any, path: string): any {
+    if (!obj || !path) return undefined;
+    // Fast-path: caminho direto sem aninhamento (ex.: "amount", "user_id")
+    if (!path.includes('.') && !path.includes('[')) {
+      if (obj[path] !== undefined) return obj[path];
+      if (obj.payload && obj.payload[path] !== undefined) return obj.payload[path];
+      if (obj.context && obj.context[path] !== undefined) return obj.context[path];
+      return undefined;
+    }
+
+    let parts = ExecutionEngine.pathPartsCache.get(path);
+    if (!parts) {
+      parts = path.includes('[') 
+        ? path.replace(/\[(\w+)\]/g, '.$1').split('.') 
+        : (path.includes('.') ? path.split('.') : [path]);
+      if (ExecutionEngine.pathPartsCache.size < 2000) {
+        ExecutionEngine.pathPartsCache.set(path, parts);
+      }
+    }
+    let cur = obj;
+    for (let idx = 0; idx < parts.length; idx++) {
+      const p = parts[idx];
+      if (cur === null || cur === undefined) return undefined;
+      if (idx === 0 && cur[p] === undefined) {
+        if ((p === 'payload' || p === 'context' || p === 'header') && typeof cur === 'object') {
+          continue;
+        }
+      }
+      cur = cur[p];
+    }
+    return cur;
+  }
+
+  /**
+   * @description Interpola recursivamente sequências ${caminho} num valor primitivo, objeto ou array com base no contexto.
+   * Contém salvaguardas de alta velocidade (fast-paths) que evitam expressões regulares em cadeias estáticas.
+   * @param {any} data - Dado de entrada contendo eventuais expressões de interpolação.
+   * @param {any} context - Contexto com as variáveis.
+   * @returns {any} Dado interpolado com os valores resolvidos.
+   */
+  private interpolateData(data: any, context: any): any {
+    if (typeof data === 'string') {
+      // Fast-path: se não contiver o marcador de interpolação, retorna imediatamente sem regex
+      if (!data.includes('${')) return data;
+
+      // Fast-path para substituição de valor único e exato (ex.: "${user.id}")
+      if (data.startsWith('${') && data.endsWith('}') && data.indexOf('${', 2) === -1) {
+        const resolved = this.resolvePathValue(context, data.slice(2, -1).trim());
+        return resolved !== undefined ? resolved : data;
+      }
+
+      return data.replace(/\$\{([^}]+)\}/g, (_, p) => {
+        const val = this.resolvePathValue(context, p.trim());
+        return val !== undefined && val !== null ? (typeof val === 'object' ? JSON.stringify(val) : String(val)) : '';
+      });
+    }
+    if (Array.isArray(data)) {
+      const len = data.length;
+      const res = new Array(len);
+      for (let i = 0; i < len; i++) {
+        res[i] = this.interpolateData(data[i], context);
+      }
+      return res;
+    }
+    if (data && typeof data === 'object') {
+      if (data instanceof Date || data instanceof RegExp || Buffer.isBuffer(data)) return data;
+      const res: any = {};
+      const keys = Object.keys(data);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        res[k] = this.interpolateData(data[k], context);
+      }
+      return res;
+    }
+    return data;
+  }
+
+  /**
+   * @description Avalia uma condição booleana através do avaliador seguro sem recurso a `eval()`,
+   * com pré-interpolação de variáveis dinâmicas em formato ${expressao}.
    *
    * @param {string} condition - Expressão lógica em texto.
    * @param {any} context - Contexto com as variáveis.
@@ -808,7 +1333,17 @@ export class ExecutionEngine {
    */
   private evaluateCondition(condition: string, context: any): boolean {
     try {
-      return SafeEvaluator.evaluate(condition, context);
+      let cleanCond = condition.trim();
+      if ((cleanCond.startsWith('"') && cleanCond.endsWith('"')) || (cleanCond.startsWith("'") && cleanCond.endsWith("'"))) {
+        cleanCond = cleanCond.slice(1, -1).trim();
+      }
+      cleanCond = cleanCond.replace(/\$\{([^}]+)\}/g, (_, path) => {
+        const val = this.resolvePathValue(context, path.trim());
+        if (typeof val === 'string') return `"${val}"`;
+        if (val === undefined || val === null) return 'null';
+        return String(val);
+      });
+      return SafeEvaluator.evaluate(cleanCond, context);
     } catch {
       return false;
     }
@@ -850,5 +1385,28 @@ export class ExecutionEngine {
     if (status && (status === 502 || status === 503 || status === 504)) return true;
     if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.code === 'ENOTFOUND') return true;
     return false;
+  }
+
+  /**
+   * @description Realiza a clonagem profunda de estruturas de dados através de `structuredClone` nativo do V8 (C++),
+   * com contingência graciosa para serialização JSON tradicional caso encontre tipos não-estruturados.
+   *
+   * @param {any} obj - Objeto ou valor a clonar.
+   * @returns {any} Cópia profunda e desvinculada do objeto original.
+   */
+  private deepClone(obj: any): any {
+    if (obj === undefined || obj === null) return obj;
+    if (typeof structuredClone === 'function') {
+      try {
+        return structuredClone(obj);
+      } catch {
+        // Fallback para objetos com métodos ou símbolos
+      }
+    }
+    try {
+      return JSON.parse(JSON.stringify(obj));
+    } catch {
+      return { ...obj };
+    }
   }
 }

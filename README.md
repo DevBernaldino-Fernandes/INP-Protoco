@@ -12,17 +12,21 @@ O INP funciona como um intermediário inteligente (Gateway Orquestrador). Em vez
 
 ```mermaid
 graph TD
-    Client[Cliente/API Request] -->|Intent DSL ou Natural| Core[INPCore Orchestrator]
-    Core -->|1. Parse| Parser[IntentParser]
-    Core -->|2. Match Capabilities| Matching[MatchingEngine]
-    Matching -->|Consultar Cache/DB| Registry[CapabilityRegistry & RegistryCache]
-    Core -->|3. Executar Fluxo| Exec[ExecutionEngine]
-    Exec -->|Validar Permissões| Security[RBAC Validator]
-    Exec -->|Validar Contratos| Validation[AJV JSON Schema Validator]
-    Exec -->|Chamadas com Circuit Breaker & Retry| Services[Remote Microsserviços / HTTP]
-    Exec -->|Gravar Logs de Transação| DB[(PostgreSQL Database)]
-    Core -->|4. Formatar Saída| Composer[ResponseComposer]
-    Composer -->|JSON, XML, Text, Event| Client
+    Client[Cliente / Frontend / SDK] -->|Intent DSL, JSON Nativo ou Natural| Gateway[API REST Gateway /api/intent]
+    Gateway -->|Validação Idempotência & RBAC| Core[INPCore Orchestrator]
+    Core -->|1. Parse com AST Cache| Parser[IntentParser & IntentPlanCache]
+    Core -->|2. Resolução Semântica| Matching[MatchingEngine & Dynamic Health Scoring]
+    Matching -->|Consultar Catálogo & MAB| Registry[CapabilityRegistry & RegistryCache]
+    Core -->|3. Executar Grafo com Saga| Exec[ExecutionEngine]
+    Exec -->|Validação Contratos AJV| Validation[SchemaCache inputSchema/outputSchema]
+    Exec -->|Chamadas com Sockets Persistentes| Breaker[CircuitBreakerRegistry & HTTP Agent]
+    Breaker -->|Invocação de Serviços| Services[Microsserviços Remotos & Nativos]
+    Exec -->|Auto-Cura em Caso de Violação| AIHealer[AISelfHealer Agent]
+    Exec -->|Saga Rollback LIFO se Falha| Saga[SagaState & Recovery Manager]
+    Exec -->|Persistência Transacional| DB[(PostgreSQL Database)]
+    Exec -->|Telemetria em Tempo Real| Telemetry[TelemetryService SSE / WebSockets]
+    Core -->|4. Formatação de Resposta| Composer[ResponseComposer]
+    Composer -->|JSON, XML, Text, Event SSE| Client
 ```
 
 ---
@@ -152,21 +156,100 @@ INTENT "[Nome da Intenção]" {
 }
 ```
 
-### 4.1. Catálogo Canônico de Verbos Semânticos (Quando e Como Usar)
+### 4.1. Catálogo Consolidado de Verbos Semânticos (125 Verbos Operacionais — v2.8)
 
-No INP Protocol, cada capacidade declarada ou exigida é definida pelo par `[VERBO] [TARGET]`. O **Verbo** governa a semântica de execução, idempotência e compensação transacional em caso de falha (Padrão Saga):
+No INP Protocol v2.8, o catálogo semântico conta com **125 verbos oficiais** distribuídos em domínios arquiteturais: **32 Canónicos**, **18 Canónicos Adicionais**, **24 Anti-Estresse & Confiabilidade**, **6 Revolucionários ("Killer Features")**, **9 Criptográficos & Concorrência**, **16 Alta Produtividade & DevOps**, **15 Interconexão & Ergonomia** e **5 Novos Estratégicos v2.8**.
 
-| Categoria | Verbos Canônicos Suportados | Propósito Principal & Quando Usar |
+#### A. Verbos Canónicos (32 Verbos)
+| Categoria | Verbos Suportados | Propósito Principal & Quando Usar |
 |---|---|---|
-| **CRUD & Domínio** | `CREATE`, `READ`, `UPDATE`, `DELETE` | Gestão de ciclo de vida de entidades formais. Use `CREATE` para novos objetos duráveis, `READ` para consultas locais por ID, `UPDATE` para mutações controladas e `DELETE` para expurgo definitivo. |
-| **Execução & Operações** | `EXECUTE`, `PROCESS`, `ROUTE`, `COMPOSE` | `EXECUTE` para comandos transacionais atômicos com efeito colateral direto (ex: pagamentos); `PROCESS` para lotes/filas contínuas; `ROUTE` para tráfego e nós federados; `COMPOSE` para agregação de saídas. |
-| **Finanças, Estoque & Sagas** | `TRANSFER`, `REFUND`, `CANCEL`, `RESERVE`, `RELEASE` | Operações com compensação distribuída estrita: `TRANSFER` (débito/crédito mútuo), `REFUND` (estorno financeiro pós-falha), `CANCEL` (anulação de fluxo ativo), `RESERVE` (bloqueio temporário com TTL) e `RELEASE` (desbloqueio compensatório de estoque). |
-| **Inspeção, Validação & Regras** | `VALIDATE`, `CHECK`, `CALCULATE`, `ANALYZE` | `VALIDATE` para contratos/JSON Schema; `CHECK` para disponibilidade instantânea sem retenção; `CALCULATE` para fórmulas matemáticas puras; `ANALYZE` para scoring analítico/risco de fraude. |
-| **Segurança & Identidade** | `AUTHENTICATE`, `AUTHORIZE`, `AUDIT` | `AUTHENTICATE` responde *"Quem é você?"* (senhas, JWT, chaves); `AUTHORIZE` responde *"Você tem permissão para isso?"* (RBAC); `AUDIT` valida integridade e conformidade de registros. |
-| **Comunicação & Mensageria** | `NOTIFY`, `SEND`, `PUBLISH`, `SYNC`, `DISPATCH` | `NOTIFY` para alertas leves a clientes (SMS/Push); `SEND` para remessa de payloads e faturas; `PUBLISH` para eventos em barramentos pub/sub (Kafka/RabbitMQ); `SYNC` para conciliação de réplicas; `DISPATCH` para workers assíncronos. |
-| **Workflow & Governança** | `APPROVE`, `REJECT`, `GENERATE`, `STORE`, `ARCHIVE` | `APPROVE` / `REJECT` para deliberações de alçada/crédito; `GENERATE` para artefatos derivados (PDF/tokens); `STORE` para persistência técnica em storage/cache; `ARCHIVE` para guarda fria legal. |
+| **CRUD & Domínio** | `CREATE`, `READ`, `UPDATE`, `DELETE` | Gestão de ciclo de vida de entidades. `CREATE` para novos objetos, `READ` para consultas locais, `UPDATE` para mutações e `DELETE` para expurgo. |
+| **Execução & Operações** | `EXECUTE`, `PROCESS`, `ROUTE`, `COMPOSE` | `EXECUTE` para comandos transacionais atômicos (ex: pagamentos); `PROCESS` para filas/lotes; `ROUTE` para tráfego e nós federados; `COMPOSE` para agregação de saídas. |
+| **Finanças, Estoque & Sagas** | `TRANSFER`, `REFUND`, `CANCEL`, `RESERVE`, `RELEASE` | Operações com compensação distribuída estrita: `TRANSFER` (compensado por `REFUND`), `RESERVE` (bloqueio com lease, compensado por `RELEASE`), `CANCEL` para anulação ativa. |
+| **Inspeção, Validação & Regras** | `VALIDATE`, `CHECK`, `CALCULATE`, `ANALYZE`, `FILTER` | `VALIDATE` para contratos JSON Schema; `CHECK` para disponibilidade instantânea sem retenção; `CALCULATE` para fórmulas matemáticas puras; `ANALYZE` para scoring analítico/fraude; `FILTER` para predicados. |
+| **Segurança & Identidade** | `AUTHENTICATE`, `AUTHORIZE`, `AUDIT` | `AUTHENTICATE` responde *"Quem é você?"*; `AUTHORIZE` valida permissões RBAC; `AUDIT` valida integridade e trilha forense de transações. |
+| **Comunicação & Mensageria** | `NOTIFY`, `SEND`, `PUBLISH`, `SYNC`, `DISPATCH` | `NOTIFY` para alertas leves (SMS/Push); `SEND` para faturas/documentos; `PUBLISH` para barramentos Pub/Sub (Kafka/RabbitMQ); `SYNC` para conciliação de réplicas; `DISPATCH` para workers assíncronos. |
+| **Workflow & Governança** | `APPROVE`, `REJECT`, `GENERATE`, `STORE`, `ARCHIVE`, `FETCH` | `APPROVE` / `REJECT` para deliberações de crédito; `GENERATE` para artefatos derivados (PDF/tokens); `STORE` / `FETCH` para persistência técnica; `ARCHIVE` para guarda fria legal (SOC2). |
 
-> 📖 **Guia Completo e Detalhado**: Para a especificação exaustiva de cada um dos 31 verbos com comparações e exemplos práticos de código, consulte a [Seção 5 da Especificação da DSL](file:///c:/inp_protocol/docs/02-DSL-SPECIFICATION.md#5-catálogo-canônico-de-verbos-de-intenção-semântica-finalidade-e-guia-de-decisão).
+#### B. Verbos Estratégicos & Anti-Estresse do Motor (14 Verbos - v2.6)
+| Verbo | Categoria | Finalidade Arquitetural & Mitigação de Sobrecarga |
+|---|---|---|
+| `COALESCE` | Anti-Stress | **Single-Flight Pattern**: Deduplica requisições concorrentes idênticas em voo, colapsando 100 pedidos simultâneos numa única execução real. |
+| `MEMOIZE` | Anti-Stress | **Cache-Aside Atómico**: Memoização transparente em memória com chave criptográfica (*SHA-256*) e TTL configurável. |
+| `GUARD` | Resiliência | **Fail-Fast Invariants**: Barreira de validação que avalia invariantes de segurança em memória sem disparar chamadas de rede externas. |
+| `THROTTLE` | Anti-Stress | **Token Bucket Pacing**: Controlo de cadência e vazão por alvo, contendo picos e respeitando limites de rate limit de APIs externas. |
+| `BATCH` | Anti-Stress | **Chunking Declarativo**: Fracionamento de coleções grandes em pedaços seguros (*chunks*), eliminando o problema de sobrecarga N+1. |
+| `DEFER` | Anti-Stress | **Transactional Outbox**: Agendamento assíncrono persistido na base de dados (`queue_jobs`), libertando o ciclo síncrono do motor. |
+| `MERGE` | Ergonomia | **Consolidação Profunda**: Fusão declarativa de múltiplos fragmentos ou saídas de passos anteriores num único payload consolidado. |
+| `AWAIT` | Ergonomia | **Suspensão Reativa de Saga**: Coloca a Saga em estado `SUSPENDED` sem reter *threads* nem *event loop*, pronta para retoma externa. |
+| `PROBE` | Telemetria | **Zero-IO Health Check**: Inspeção volátil de saúde em memória (<1ms) diretamente via `ServiceMetricsCollector`, sem escritas em disco. |
+| `SHADOW` | Resiliência | **Dark Launching / Canary**: Disparo assíncrono (*fire-and-forget*) de tráfego espelho para validação em segundo plano sem onerar a latência. |
+| `REDACT` | Segurança | **Data Sanitization**: Ofuscação determinística de campos sensíveis (`password`, `creditCard`, `token`) com máscaras irreversíveis antes de transmissão ou gravação. |
+| `CHECKPOINT` | Resiliência | **Saga Savepoint**: Registo explícito de marco intermediário no PostgreSQL para permitir recuperação granular em caso de desastre. |
+| `SIMULATE` | Resiliência | **Chaos & Mocking**: Injeção controlada de latência sintética, respostas mockadas ou falhas programadas para testes de carga e resiliência. |
+| `FANOUT` | Ergonomia | **Bounded Concurrency Dispatch**: Dispersão paralela com contrapressão estrita, evitando exaustão de *heap* ou sockets. |
+
+#### C. Verbos Revolucionários ("Killer Features") (6 Verbos - v2.7)
+| Verbo | Domínio Tecnológico | Proposta de Valor & Diferencial Competitivo |
+|---|---|---|
+| `STREAM` | Real-Time / SSE | **Transmissão Progressiva em Tempo Real**: Despacha deltas/chunks incrementais via SSE e WebSockets (`STREAM_CHUNK`) sem bloquear o ciclo do motor, permitindo UIs reativas (estilo ChatGPT/Copilot). |
+| `ATTEST` | Criptografia & Compliance | **Prova Forense Inviolável**: Gera um carimbo criptográfico (*HMAC-SHA256*) e selo de atestação do estado de execução (`ATTESTATION_SEAL`), atendendo normas SOC2, HIPAA e LGPD. |
+| `ADAPT` | IA & Roteamento Dinâmico | **Roteamento Inteligente com Multi-Armed Bandit**: Seleciona autonomamente o melhor provedor com base em métricas reais de latência e taxa de erro em tempo real ($\epsilon$-greedy). |
+| `ESCALATE` | Human-in-the-Loop | **Suspensão Supervisionada com SLA**: Suspende Sagas de alto risco ou atípicas para aprovação humana (`SUSPENDED`), gerando token de decisão, contagem regressiva de SLA e endpoint REST de aprovação formal. |
+| `REASON` | Orquestração Agêntica | **Deliberação Racional Estruturada (CoT)**: Avalia hipóteses, pondera prós e contras, calcula escores de confiança e fundamenta a decisão de forma auditável para agentes autônomos. |
+| `CONSENSUS` | Concorrência Distribuída | **Acordo Distribuído de Quórum**: Consenso federado bizantino entre múltiplos nós de execução. |
+
+#### D. Novos Verbos Estratégicos do Motor (5 Verbos - v2.8)
+| Verbo | Domínio | Proposta de Valor & Funcionalidade |
+|---|---|---|
+| `COMPENSATE` | Saga Reativa | **Disparo Explícito de Compensação**: Aciona compensações de Saga sob demanda de forma declarativa dentro do grafo sem aguardar falha catastrófica. |
+| `BENCHMARK` | Observabilidade | **Cronometragem de Precisão**: Medição em nanosegundos (`hrtime`) com cálculo de ops/s, uso de memória e telemetria inline para SLAs estritos. |
+| `NORMALIZE` | Qualidade de Dados | **Padronização Semântica**: Normalização recursiva de payloads (ISO 8601, remoção de diacríticos, chaves sanitizadas e números de telefone). |
+| `ENQUEUE` | Fila Outbox | **Enfileiramento com Prioridade**: Agendamento atómico na tabela transacional `queue_jobs` com prioridade configurável e atraso programado (`delayMs`). |
+| `INSPECT` | Telemetria / Debug | **Inspeção Não-Invasiva**: Emissão de snapshot forense em tempo real via Server-Sent Events (SSE) sem alterar o contexto de execução. |
+
+---
+
+### 4.2. Estrutura Visual Explicativa: Ciclo de Vida Completo de uma Intenção (Do Zero ao Fim)
+
+Para que programadores e arquitetos criem intenções do absoluto zero com perfeição e sem estresse, o INP Protocol estabelece o seguinte ciclo de vida canónico em 10 etapas fundamentais:
+
+```mermaid
+flowchart TD
+    subgraph FASE_PLANEJAMENTO["1. Planejamento & Modelagem"]
+        F1["01. Problema de Negócio<br/>(Definição de SLA, Modo Síncrono/Outbox, Idempotência)"] --> F2["02. Escolha dos Verbos<br/>(Mapeamento nos 51 verbos & pares de compensação)"]
+        F2 --> F3["03. Dados & CONTEXT<br/>(Payload JSON, Variáveis & failurePolicy: ROLLBACK/FORWARD)"]
+        F3 --> F4["04. Grafo FLOW<br/>(SEQUENCE, PARALLEL, CONDITION, RETRY, TIMEOUT)"]
+        F4 --> F5["05. Contrato de Saída<br/>(OUTPUT FORMAT: json, xml, text, event)"]
+    end
+
+    subgraph FASE_SUBMISSAO["2. Gateway & Compilação"]
+        F5 --> F6["06. Gateway HTTP / SDK<br/>(POST /api/intent + X-Idempotency-Key + RBAC)"]
+        F6 --> F7["07. Parsing & AST Cache<br/>(IntentParser, validação gramatical & cache LRU em memória)"]
+        F7 --> F8["08. Matching Semântico<br/>(CapabilityRegistry, Dynamic Health Score & MAB)"]
+    end
+
+    subgraph FASE_EXECUCAO["3. Execução & Resiliência"]
+        F8 --> F9["09. Execução Resiliente<br/>(Circuit Breaker, Sockets Keep-Alive, Single-Flight & Schemas)"]
+        F9 -->|Sucesso| F10A["10A. Conclusão & Telemetria<br/>(Persistência COMPLETED, Prova ATTEST & SSE Event)"]
+        F9 -->|Falha Irrecuperável| F10B["10B. Saga Rollback LIFO<br/>(Execução atómica de ações compensatórias na ordem inversa)"]
+        F9 -->|Suspensão / HITL| F10C["10C. Suspensão SUSPENDED<br/>(AWAIT / ESCALATE aguardando webhook ou aprovação humana)"]
+    end
+```
+
+#### As 10 Etapas Detalhadas:
+1. **Definição do Problema & Requisitos**: Estabeleça o objetivo, a criticidade, se o retorno deve ser imediato ou assíncrono via Transactional Outbox (`async: true`), e planeje a chave de negócio única para idempotência.
+2. **Seleção Semântica dos Verbos**: Escolha os verbos adequados. Para cada ação mutável (ex.: `TRANSFER FUNDS`, `RESERVE LOCK`), defina sua ação compensatória (`REFUND PAYMENT`, `RELEASE LOCK`).
+3. **Modelagem do Contexto (`CONTEXT`)**: Estruture o JSON de dados e configure a política `failurePolicy: "ROLLBACK"` (padrão financeiro LIFO) ou `"FORWARD_RETRY"` (para jobs em lote tolerantes a retomadas).
+4. **Topologia do Grafo (`FLOW`)**: Conecte os passos: use `SEQUENCE` para cadeias causais, `PARALLEL` para I/O simultâneo com proteção `AbortController`, `RETRY` com backoff exponencial e `TIMEOUT` para contenção de latência.
+5. **Especificação de Saída (`OUTPUT`)**: Defina o formato via `ResponseComposer`: `json`, `xml`, `text` ou `event` (Server-Sent Events para streaming).
+6. **Submissão via Gateway HTTP / SDK**: Submeta via `POST /api/intent` enviando o cabeçalho `X-Idempotency-Key` e o `securityContext` com credenciais RBAC.
+7. **Parsing, Validação & AST Cache**: O `IntentParser` analisa a DSL e consulta o `IntentPlanCache` para devolver o plano pré-compilado em <0.1ms caso já tenha sido processado.
+8. **Matching Semântico & Dynamic Health**: O `MatchingEngine` localiza provedores ativos no `CapabilityRegistry`, ponderando `trustScore`, nível de segurança e penalização de latência em tempo real via `ServiceMetricsCollector`.
+9. **Execução no Motor com Resiliência**: O `ExecutionEngine` invoca serviços utilizando conexões HTTP Keep-Alive, proteção `CircuitBreakerRegistry` por serviço, validação de contratos de entrada (`inputSchema`) e saída (`outputSchema`) com autocura via IA (`AISelfHealer`).
+10. **Conclusão, Rollback ou Suspensão**: Em caso de sucesso, registra `COMPLETED` com recibo forense e emite telemetria em tempo real; em caso de falha, dispara o rollback de Saga desfazendo passos em ordem inversa (LIFO); se invocado `AWAIT` ou `ESCALATE`, suspende com segurança para retoma externa.
+
+> 📚 **Livro Completo do Motor Atualizado**: Para a obra definitiva cobrindo a engenharia do motor, os 51 verbos minuciosamente explicados, 10 tutoriais passo a passo do zero à produção, segurança e manuais de operações, consulte [docs/LIVRO_COMPLETO_INP_PROTOCOL_v2.7.md](file:///c:/inp_protocol/docs/LIVRO_COMPLETO_INP_PROTOCOL_v2.7.md).
 
 ---
 

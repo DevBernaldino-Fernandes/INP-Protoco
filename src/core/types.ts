@@ -29,7 +29,42 @@ export type IntentVerb =
   | 'FETCH' | 'STORE' | 'CALCULATE'
   | 'REFUND' | 'CANCEL' | 'APPROVE' | 'REJECT'
   | 'CHECK' | 'RESERVE' | 'RELEASE' | 'SEND'
-  | 'DISPATCH' | 'PUBLISH' | 'ARCHIVE' | 'AUDIT';
+  | 'DISPATCH' | 'PUBLISH' | 'ARCHIVE' | 'AUDIT'
+  | 'FILTER'
+  // Verbos Canónicos Adicionais v2.7 (Especificação Completa)
+  | 'QUERY' | 'RESOLVE' | 'RETRIEVE' | 'STREAM_READ'
+  | 'MUTATE' | 'UPSERT' | 'PATCH' | 'LOOP' | 'BRANCH'
+  | 'TRANSFORM' | 'MAP' | 'REDUCE' | 'AGGREGATE' | 'ENRICH'
+  | 'ASSERT' | 'SANITIZE' | 'ENFORCE_SCHEMA' | 'CHECK_POLICY'
+  // Verbos Estratégicos Anti-Stress v2.6/v2.7
+  | 'COALESCE' | 'MEMOIZE' | 'GUARD' | 'THROTTLE'
+  | 'BATCH' | 'DEFER' | 'MERGE' | 'AWAIT'
+  | 'PROBE' | 'SHADOW' | 'REDACT' | 'CHECKPOINT'
+  | 'SIMULATE' | 'FANOUT' | 'RATE_LIMIT' | 'CIRCUIT_BREAKER'
+  | 'SHARD' | 'COMPRESS' | 'DEBOUNCE' | 'PRIORITY_QUEUE'
+  | 'HEALTH_CHECK' | 'SHED_LOAD' | 'RETRY_BACKOFF' | 'FALLBACK'
+  // Verbos Revolucionários v2.7 (Killer Features: Reatividade, IA Agêntica & Prova Criptográfica)
+  | 'STREAM' | 'ATTEST' | 'ADAPT' | 'ESCALATE'
+  | 'REASON' | 'CONSENSUS'
+  // Verbos Criptográficos, Mensageria e Concorrência Distribuída
+  | 'TRIGGER' | 'SUBSCRIBE' | 'ENCRYPT' | 'DECRYPT'
+  | 'SIGN' | 'VERIFY' | 'LOCK' | 'UNLOCK' | 'ACQUIRE'
+  // Verbos de Alta Produtividade e Resolução de Dores Críticas (Anti-Headache & DevOps Resiliente v2.7)
+  | 'DEDUPLICATE' | 'REDRIVE' | 'CANARY' | 'DIFF'
+  | 'CORRELATE' | 'ISOLATE' | 'ANONYMIZE' | 'DRAIN'
+  | 'QUARANTINE' | 'LEASE' | 'BACKPRESSURE' | 'MIGRATE'
+  | 'SAMPLE' | 'RECONCILE' | 'CHALLENGE' | 'MUTEX'
+  // Verbos de Interconexão entre Sistemas e Desmembramento Descomplicado (Bridge & Ergonomia v2.7)
+  | 'BRIDGE' | 'OUTBOUND' | 'INGEST' | 'FANIN'
+  | 'EMIT' | 'PLUCK' | 'FLATTEN' | 'MASK'
+  | 'CAST' | 'CLAMP' | 'COOLDOWN' | 'UNDO'
+  | 'SNAPSHOT' | 'DIVERGE' | 'HEARTBEAT'
+  // Novos Verbos Estratégicos de Resiliência, Observabilidade e Dados v2.8 & v2.9
+  | 'COMPENSATE' | 'BENCHMARK' | 'NORMALIZE' | 'ENQUEUE' | 'INSPECT'
+  | 'TIME_TRAVEL' | 'REPLAY' | 'TIMELINE'
+  // 8 Verbos Estratégicos da 9ª Família (IA Vetorial, Finanças Atómicas & Confiabilidade SRE v3.0)
+  | 'EMBED' | 'VECTOR_SEARCH' | 'SPLIT' | 'ESCROW'
+  | 'POLL' | 'INVALIDATE' | 'DRIFT_DETECT' | 'CHAOS';
 
 /**
  * @description Palavras-chave de controlo de fluxo no grafo de orquestração.
@@ -84,6 +119,14 @@ export interface IntentFlowStep {
   dependsOn?: string[];
   /** Sub-passos aninhados para blocos compostos (ex.: SEQUENCE, PARALLEL) */
   steps?: IntentFlowStep[];
+  /** Parâmetros declarativos ou corpo de carga útil associados ao passo */
+  parameters?: Record<string, any>;
+  /** Configuração de ação compensatória do padrão Saga (reversão LIFO) */
+  compensate?: { action: string; payload?: any };
+  /** Esquema JSON Schema exigido para validação do resultado do passo */
+  outputSchema?: any;
+  /** Política de retentativa declarativa com contagem e estratégia de recuo */
+  retry?: { maxAttempts?: number; backoff?: string };
 }
 
 /**
@@ -137,6 +180,10 @@ export interface Capability {
   outputSchema?: any;
   /** Capacidade inversa para compensação transacional em padrões Saga */
   compensateCapability?: string;
+  /** Pureza e garantia de ausência de efeitos colaterais ('PURE', 'IDEMPOTENT_READ', 'STATEFUL_MUTATION') */
+  purity?: 'PURE' | 'IDEMPOTENT_READ' | 'STATEFUL_MUTATION';
+  /** Indica se a operação é segura e idempotente para execução concorrente */
+  isIdempotent?: boolean;
 }
 
 /**
@@ -221,6 +268,8 @@ export interface ExecutionStepResult {
   durationMs: number;
   /** Data e hora exatas da execução */
   timestamp: Date;
+  /** Metadados criptográficos do snapshot capturado na Máquina do Tempo para persistência durável da trilha Merkle */
+  snapshotMeta?: any;
 }
 
 /**
@@ -230,6 +279,8 @@ export interface ExecutionStepResult {
 export interface ExecutionResult {
   /** Identificador único global (UUID v4) da execução */
   id: string;
+  /** Identificador único da execução (alias alternativo para id) */
+  executionId?: string;
   /** Identificador da intenção que despoletou a execução */
   intentId: string;
   /** Estado final consolidado do fluxo */

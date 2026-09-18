@@ -38,6 +38,10 @@ export class QueueWorker {
   private static lastReapTime = 0;
   /** Intervalo entre verificações de tarefas órfãs (30 segundos) */
   private static REAP_INTERVAL_MS = 30000;
+  /** Intervalo dinâmico de sondagem adaptativa (evita saturação em períodos ociosos) */
+  private static pollIntervalMs = 500;
+  private static readonly MIN_POLL_INTERVAL_MS = 500;
+  private static readonly MAX_POLL_INTERVAL_MS = 5000;
 
   /**
    * @description Inicializa o ciclo contínuo de escuta e consumo de tarefas da fila.
@@ -75,10 +79,12 @@ export class QueueWorker {
       await this.reapExpiredLocks();
     }
 
+    let foundJob = false;
+    let claimedJob: QueueJob | null = null;
+
     try {
-      // Execução delimitada numa transação isolada da base de dados
+      // FASE 1 — Transação curta de captura atómica: seleciona e reserva um trabalho com SKIP LOCKED
       await AppDataSource.transaction(async (entityManager) => {
-        // Seleciona um trabalho com estado PENDING, ignorando linhas bloqueadas por outros trabalhadores
         const job = await entityManager.createQueryBuilder(QueueJob, 'job')
           .setLock('pessimistic_write')
           .setOnLocked('skip_locked')
@@ -87,91 +93,106 @@ export class QueueWorker {
           .getOne();
 
         if (job) {
-          console.log(`[Trabalhador de Fila] Tarefa capturada: ID ${job.id} (Tipo: ${job.taskType})`);
-          
-          // Altera o estado para PROCESSING e sela a posse do registo com o identificador deste nó
+          foundJob = true;
           job.status = 'PROCESSING';
           job.attempts += 1;
           job.lockedBy = this.workerId;
           job.lockedAt = new Date();
           await entityManager.save(job);
+          claimedJob = job;
+          console.log(`[Trabalhador de Fila] Tarefa capturada: ID ${job.id} (Tipo: ${job.taskType})`);
+        }
+      });
 
-          try {
-            if (job.taskType === 'FLOW_EXECUTION') {
-              const { text, isNaturalLanguage, securityContext, executionId } = job.payload;
-              const core = new INPCore(undefined, securityContext);
-              
-              const registry = core.getRegistry();
-              const parser = core.getParser();
-              const matchingEngine = core.getMatchingEngine();
+      // FASE 2 — Execução fora de qualquer transação: a conexão à BD fica livre durante invocações HTTP
+      if (claimedJob) {
+        const job = claimedJob as QueueJob;
+        let executionError: any = null;
 
-              // Análise sintática da intenção
-              let intent;
-              if (isNaturalLanguage) {
-                const services = await registry.getAllServices();
-                const activeCaps = services.flatMap(s =>
-                  (s.capabilities as any[]).map(c => `${c.verb} ${c.target}`.toUpperCase())
-                );
-                intent = await parser.parseNaturalAsync(text, activeCaps);
-              } else {
-                intent = parser.parse(text);
-              }
+        try {
+          if (job.taskType === 'FLOW_EXECUTION') {
+            const { text, isNaturalLanguage, securityContext, executionId } = job.payload;
+            const core = new INPCore(undefined, securityContext);
+            
+            const registry = core.getRegistry();
+            const parser = core.getParser();
+            const matchingEngine = core.getMatchingEngine();
 
-              // Correspondência com serviços registados
-              const serviceMatches = await matchingEngine.matchIntent(intent);
-              const normalized = new Map();
-              for (const [req, match] of serviceMatches.entries()) {
-                normalized.set(req.toUpperCase(), match);
-              }
-
-              // Execução da orquestração reutilizando o ID previamente emitido na fila
-              const execEngine = new ExecutionEngine(registry, securityContext);
-              await execEngine.execute(intent, normalized, executionId);
-              
-            } else if (job.taskType === 'FLOW_COMPENSATION') {
-              // Execução de compensação distribuída em caso de rollback assíncrono
-              const { sagaId, persistedStack } = job.payload;
-              const core = new INPCore();
-              const execEngine = new ExecutionEngine(core.getRegistry());
-              await execEngine.resumeRollback(sagaId, persistedStack);
+            // Análise sintática da intenção
+            let intent;
+            if (isNaturalLanguage) {
+              const services = await registry.getAllServices();
+              const activeCaps = services.flatMap(s =>
+                (s.capabilities as any[]).map(c => `${c.verb} ${c.target}`.toUpperCase())
+              );
+              intent = await parser.parseNaturalAsync(text, activeCaps);
+            } else {
+              intent = parser.parse(text);
             }
 
-            // Marcação de conclusão bem-sucedida
-            job.status = 'COMPLETED';
-            job.lastError = null;
-          } catch (err: any) {
-            console.error(`[Trabalhador de Fila] A execução da tarefa ID ${job.id} falhou:`, err.message);
-            job.lastError = err.message;
+            // Correspondência com serviços registados
+            const serviceMatches = await matchingEngine.matchIntent(intent);
+            const normalized = new Map();
+            for (const [req, match] of serviceMatches.entries()) {
+              normalized.set(req.toUpperCase(), match);
+            }
 
-            // Se o limite de retentativas ainda não foi esgotado, recalcula novo agendamento com backoff
-            if (job.attempts < job.maxAttempts) {
-              job.status = 'PENDING';
-              // Recuo exponencial: 2 elevado ao número de tentativas em segundos
-              const delaySeconds = Math.pow(2, job.attempts);
-              job.scheduledAt = new Date(Date.now() + delaySeconds * 1000);
+            // Execução da orquestração reutilizando o ID previamente emitido na fila
+            const execEngine = new ExecutionEngine(registry, securityContext);
+            await execEngine.execute(intent, normalized, executionId);
+            
+          } else if (job.taskType === 'FLOW_COMPENSATION') {
+            // Execução de compensação distribuída em caso de rollback assíncrono
+            const { sagaId, persistedStack } = job.payload;
+            const core = new INPCore();
+            const execEngine = new ExecutionEngine(core.getRegistry());
+            await execEngine.resumeRollback(sagaId, persistedStack);
+          }
+        } catch (err: any) {
+          console.error(`[Trabalhador de Fila] A execução da tarefa ID ${job.id} falhou:`, err.message);
+          executionError = err;
+        }
+
+        // FASE 3 — Transação curta de finalização: persiste o resultado e liberta o bloqueio
+        await AppDataSource.transaction(async (entityManager) => {
+          // Recarrega o registo para obter a versão mais recente antes de atualizar
+          const freshJob = await entityManager.findOneBy(QueueJob, { id: job.id });
+          if (!freshJob) return;
+
+          freshJob.lockedAt = null;
+          freshJob.lockedBy = null;
+
+          if (!executionError) {
+            freshJob.status = 'COMPLETED';
+            freshJob.lastError = null;
+          } else {
+            freshJob.lastError = executionError.message;
+
+            if (freshJob.attempts < freshJob.maxAttempts) {
+              freshJob.status = 'PENDING';
+              const delaySeconds = Math.pow(2, freshJob.attempts);
+              freshJob.scheduledAt = new Date(Date.now() + delaySeconds * 1000);
             } else {
-              // Limite de retentativas excedido: marca como FAILED e migra para a Dead Letter Queue (DLQ)
-              job.status = 'FAILED';
+              freshJob.status = 'FAILED';
               
               try {
                 await entityManager.save(DeadLetterQueue, {
-                  sagaId: job.sagaId,
-                  executionId: job.executionId,
-                  taskType: job.taskType,
-                  payload: job.payload,
-                  lastError: err.message
+                  sagaId: freshJob.sagaId,
+                  executionId: freshJob.executionId,
+                  taskType: freshJob.taskType,
+                  payload: freshJob.payload,
+                  lastError: executionError.message
                 });
                 
-                // Emissão de alerta urgente de falha definitiva para operadores
                 await AlertManager.sendAlert(
-                  `Falha Definitiva de Tarefa Assíncrona: ${job.taskType}`,
+                  `Falha Definitiva de Tarefa Assíncrona: ${freshJob.taskType}`,
                   {
-                    jobId: job.id,
-                    sagaId: job.sagaId,
-                    executionId: job.executionId,
-                    taskType: job.taskType,
-                    attempts: job.attempts,
-                    error: err.message
+                    jobId: freshJob.id,
+                    sagaId: freshJob.sagaId,
+                    executionId: freshJob.executionId,
+                    taskType: freshJob.taskType,
+                    attempts: freshJob.attempts,
+                    error: executionError.message
                   }
                 );
               } catch (dlqErr: any) {
@@ -179,19 +200,21 @@ export class QueueWorker {
               }
             }
           }
-          
-          // Liberta o bloqueio e persiste o desfecho da tentativa
-          job.lockedAt = null;
-          job.lockedBy = null;
-          await entityManager.save(job);
-        }
-      });
+
+          await entityManager.save(freshJob);
+        });
+      }
     } catch (err: any) {
       console.error('[Trabalhador de Fila] Erro na transação de sondagem:', err.message);
     }
 
-    // Reagenda a próxima iteração após 500 milissegundos
-    this.timer = setTimeout(() => this.poll(), 500);
+    // Regulação adaptativa: se encontrou tarefa, retoma 500ms; se ocioso, aumenta até 5s para poupar CPU
+    if (foundJob) {
+      this.pollIntervalMs = this.MIN_POLL_INTERVAL_MS;
+    } else {
+      this.pollIntervalMs = Math.min(this.MAX_POLL_INTERVAL_MS, Math.floor(this.pollIntervalMs * 1.5));
+    }
+    this.timer = setTimeout(() => this.poll(), this.pollIntervalMs);
   }
 
   /**

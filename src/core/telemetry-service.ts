@@ -33,8 +33,10 @@ export interface TelemetryEvent {
  */
 export class TelemetryService extends EventEmitter {
   private static instance: TelemetryService;
-  /** Conjunto de respostas HTTP ativas subscritas no canal de SSE */
-  private clients: Response[] = [];
+  /** Limite máximo de clientes SSE simultâneos para prevenir esgotamento de descritores de ficheiros e DoS */
+  public static readonly MAX_CLIENTS = 100;
+  /** Conjunto de respostas HTTP ativas subscritas no canal de SSE (O(1) para inserção e remoção) */
+  private clients: Set<Response> = new Set();
 
   /** Construtor privado para garantir a unicidade da instância */
   private constructor() {
@@ -54,13 +56,26 @@ export class TelemetryService extends EventEmitter {
 
   /**
    * @description Regista um canal de resposta Express como cliente recetor de Server-Sent Events (SSE).
+   * Se o limite máximo de clientes for atingido, encerra e remove o cliente mais antigo (evicção FIFO).
    *
    * @param {Response} res - O fluxo de resposta HTTP do Express a ser mantido aberto.
    * @security Envia imediatamente uma confirmação inicial para validar a vivacidade da ligação.
    * @audit Regista a ligação de novos observadores à monitorização do protocolo.
    */
   public addClient(res: Response): void {
-    this.clients.push(res);
+    // MEDIDA DE SEGURANÇA: Limite máximo de conexões ativas simultâneas para prevenção de ataques DoS
+    if (this.clients.size >= TelemetryService.MAX_CLIENTS) {
+      const oldestClient = this.clients.values().next().value;
+      if (oldestClient) {
+        try {
+          oldestClient.write('event: error\ndata: {"error":"Limite de clientes excedido. Conexão terminada pelo servidor."}\n\n');
+          oldestClient.end();
+        } catch {}
+        this.removeClient(oldestClient);
+      }
+    }
+
+    this.clients.add(res);
     
     // Proteção ativa contra desconexões abruptas e erros de socket
     res.on('error', () => {
@@ -73,10 +88,10 @@ export class TelemetryService extends EventEmitter {
     // Transmite evento de inicialização confirmando que a subscrição se encontra ativa
     this.sendToClient(res, 'connection_established', {
       message: 'Subscrição de telemetria ativa',
-      activeClients: this.clients.length,
+      activeClients: this.clients.size,
     });
 
-    console.log(`[Telemetria] Cliente ligado. Total de clientes ativos: ${this.clients.length}`);
+    console.log(`[Telemetria] Cliente ligado. Total de clientes ativos: ${this.clients.size}`);
   }
 
   /**
@@ -85,10 +100,9 @@ export class TelemetryService extends EventEmitter {
    * @param {Response} res - O fluxo de resposta HTTP a ser retirado.
    */
   public removeClient(res: Response): void {
-    const initialCount = this.clients.length;
-    this.clients = this.clients.filter(client => client !== res);
-    if (this.clients.length !== initialCount) {
-      console.log(`[Telemetria] Cliente desligado. Total de clientes ativos: ${this.clients.length}`);
+    const deleted = this.clients.delete(res);
+    if (deleted) {
+      console.log(`[Telemetria] Cliente desligado. Total de clientes ativos: ${this.clients.size}`);
     }
   }
 
@@ -111,10 +125,9 @@ export class TelemetryService extends EventEmitter {
     this.emit('*', event);
 
     // Transmissão externa segura para os clientes SSE conectados via HTTP
-    const activeClients = [...this.clients];
-    activeClients.forEach(client => {
+    for (const client of this.clients) {
       this.sendToClient(client, type, data);
-    });
+    }
   }
 
   /**

@@ -136,18 +136,20 @@ INTENT "delegated_flow" {
     `.trim();
 
     try {
+      const requestSignature = this.signPayload(text);
       const response = await axios.post(`${peer.endpoint}/api/peers/execute`, {
         text,
-        requesterPublicKey: this.publicKey
-      }, { timeout: 10000 });
+        requesterPublicKey: this.publicKey,
+        signature: requestSignature
+      }, { timeout: 10000, maxRedirects: 0 });
 
-      const { success, result, signature } = response.data;
+      const { success, result, signature: responseSignature } = response.data;
       if (!success) {
         throw new Error(`Erro de Federação: A execução no nó parceiro falhou. Detalhes: ${response.data.error}`);
       }
 
       // Verificação da assinatura digital emitida pelo nó parceiro
-      const isSignatureValid = this.verifySignature(result, signature, peer.publicKey);
+      const isSignatureValid = this.verifySignature(result, responseSignature, peer.publicKey);
       if (!isSignatureValid) {
         throw new Error(`Erro de Segurança na Federação: A validação da assinatura digital falhou para a resposta do parceiro "${peer.name}".`);
       }

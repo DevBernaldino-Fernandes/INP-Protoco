@@ -81,24 +81,59 @@ export class INPCore {
    * Conduz o pedido por todas as fases: análise, verificação de satisfatibilidade, correspondência,
    * orquestração transacional e composição da resposta.
    *
-   * @param {string} input - Texto declarativo na DSL do INP ou frase em linguagem natural.
-   * @param {boolean} [isNaturalLanguage=false] - Indica se o texto fornecido deve ser processado como linguagem natural.
+   * @param {string | any} input - Texto declarativo na DSL do INP, frase em linguagem natural ou objeto de intenção.
+   * @param {boolean | any} [contextOrNatural=false] - Indica se é linguagem natural ou recebe diretamente o mapa de contexto de execução.
+   * @param {any} [contextArg] - Contexto explícito caso o segundo parâmetro seja booleano.
    * @returns {Promise<any>} Resposta serializada no formato requerido pela intenção (JSON, XML, Texto ou Evento).
    * @throws {Error} Se faltarem capacidades obrigatórias ou se a orquestração falhar irrecuperavelmente.
    * @security Valida permissões e executa através do ExecutionEngine com proteção transacional.
    * @audit Regista a intenção processada e emite os respetivos eventos na telemetria de auditoria.
    */
-  async processIntent(input: string, isNaturalLanguage = false): Promise<any> {
+  async processIntent(input: string | any, contextOrNatural: boolean | any = false, contextArg?: any): Promise<any> {
+    if (typeof input === 'object' && input !== null) {
+      const explicitContext = typeof contextOrNatural === 'object' && contextOrNatural !== null ? contextOrNatural : contextArg;
+      return this.processIntentObject(input, explicitContext);
+    }
+
+    let isNaturalLanguage = false;
+    let context: any = undefined;
+
+    if (typeof contextOrNatural === 'boolean') {
+      isNaturalLanguage = contextOrNatural;
+      context = contextArg;
+    } else if (typeof contextOrNatural === 'object' && contextOrNatural !== null) {
+      context = contextOrNatural;
+      isNaturalLanguage = false;
+    }
+
+    const isDSL = typeof input === 'string' && (
+      /\bINTENT\b/i.test(input) ||
+      /\bFLOW\b/i.test(input) ||
+      /\bREQUIRE\b/i.test(input) ||
+      /\bSTEP\b/i.test(input) ||
+      /\bIF\b/i.test(input)
+    );
+
+    if (isDSL) {
+      isNaturalLanguage = false;
+    }
+
     let intent: ParsedIntent;
     if (isNaturalLanguage) {
       const services = await this.registry.getAllServices();
       const activeCaps = services.flatMap(s =>
         (s.capabilities as any[]).map(c => `${c.verb} ${c.target}`.toUpperCase())
       );
-      intent = await this.parser.parseNaturalAsync(input, activeCaps);
+      const sessionId = context?.sessionId;
+      intent = await this.parser.parseNaturalAsync(input, activeCaps, sessionId);
     } else {
       intent = this.parser.parse(input);
     }
+
+    if (context && typeof context === 'object') {
+      intent.context = { ...(intent.context || {}), ...context };
+    }
+
     console.log(`[INP] Intenção analisada com sucesso: ${intent.name}`);
 
     if (!(await this.matchingEngine.canFulfillIntent(intent))) {
@@ -120,20 +155,58 @@ export class INPCore {
    * @description Executa uma intenção previamente analisada e estruturada (`ParsedIntent`).
    *
    * @param {ParsedIntent} intent - Objeto canónico estruturado da intenção.
+   * @param {any} [extraContext] - Dados de contexto dinâmico adicional.
    * @returns {Promise<any>} Resposta final formatada.
    * @throws {Error} Se a rede não conseguir satisfazer os requisitos da intenção.
    */
-  async processIntentObject(intent: ParsedIntent): Promise<any> {
-    if (!(await this.matchingEngine.canFulfillIntent(intent))) {
-      throw new Error(`Não é possível satisfazer a intenção "${intent.name}"`);
+  async processIntentObject(intent: ParsedIntent | any, extraContext?: any): Promise<any> {
+    const normalizedIntent: ParsedIntent = {
+      id: intent.id || require('uuid').v4(),
+      name: intent.name || 'unnamed_intent',
+      verb: intent.verb,
+      context: { ...(intent.context || {}), ...(extraContext || {}) },
+      requirements: intent.requirements || { capabilities: [] },
+      flow: intent.flow || [],
+      output: intent.output || { format: 'json' },
+      rawText: intent.rawText || JSON.stringify(intent)
+    };
+
+    if ((!normalizedIntent.flow || normalizedIntent.flow.length === 0) && Array.isArray((intent as any).steps)) {
+      const stepsList: any[] = (intent as any).steps;
+      const flowSteps: any[] = [];
+      const caps: string[] = [];
+
+      for (const st of stepsList) {
+        const verb = (st.verb || 'EXECUTE').toUpperCase();
+        const target = (st.target || st.parameters?.resource || st.parameters?.service || 'DEFAULT').toUpperCase();
+        const act = `${verb} ${target}`;
+        flowSteps.push({
+          type: 'SEQUENCE',
+          name: st.id || st.name,
+          action: act,
+          parameters: st.parameters || st.payload || {}
+        });
+        caps.push(act);
+        caps.push(`${verb} *`);
+        caps.push(verb);
+      }
+
+      normalizedIntent.flow = [{ type: 'SEQUENCE', steps: flowSteps }];
+      if (normalizedIntent.requirements.capabilities.length === 0) {
+        normalizedIntent.requirements.capabilities = Array.from(new Set(caps));
+      }
     }
-    const serviceMatches = await this.matchingEngine.matchIntent(intent);
+
+    if (!(await this.matchingEngine.canFulfillIntent(normalizedIntent))) {
+      throw new Error(`Não é possível satisfazer a intenção "${normalizedIntent.name}": faltam capacidades obrigatórias na rede.`);
+    }
+    const serviceMatches = await this.matchingEngine.matchIntent(normalizedIntent);
     const normalized = new Map();
     for (const [req, match] of serviceMatches.entries()) {
       normalized.set(req.toUpperCase(), match);
     }
     const execEngine = new ExecutionEngine(this.registry, this.securityContext);
-    const result = await execEngine.execute(intent, normalized);
-    return this.responseComposer.compose(result, intent.output);
+    const result = await execEngine.execute(normalizedIntent, normalized);
+    return this.responseComposer.compose(result, normalizedIntent.output);
   }
 }

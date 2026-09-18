@@ -28,6 +28,9 @@ import { NetworkSecurity } from './network-security';
  * @description Gestor do catálogo central de serviços e resolução de capacidades no ecossistema INP.
  */
 export class CapabilityRegistry {
+  /** Memória estática de manipuladores locais em memória (serviços nativos e testes) */
+  private static localHandlers = new Map<string, (input: any, ctx?: any) => Promise<any>>();
+
   /**
    * @description Regista ou atualiza um microserviço e as respetivas capacidades técnicas.
    *
@@ -38,13 +41,26 @@ export class CapabilityRegistry {
    * @audit Regista a criação ou modificação do serviço no catálogo persistido.
    */
   async register(service: Service): Promise<void> {
+    if (service.handler) {
+      CapabilityRegistry.localHandlers.set(service.id, service.handler);
+    }
     if (service.endpoint) {
       NetworkSecurity.validateEndpoint(service.endpoint);
     }
 
-    // MEDIDA DE SEGURANÇA: Limitação preventiva do trustScore (entre 10 e 80) para evitar sequestro de capacidades
+    // MEDIDA DE SEGURANÇA: IDs com prefixo "inp-native-" são reservados exclusivamente a serviços internos.
+    // Nós externos com endpoint HTTP não podem registar-se com IDs nativos reservados.
+    const isNativeId = service.id.startsWith('inp-native-');
+    if (isNativeId && service.endpoint) {
+      throw new Error(`Registo Negado: O identificador "${service.id}" é reservado a serviços nativos internos do protocolo INP e não pode ser registado por nós externos.`);
+    }
+
+    // Para serviços nativos (sem endpoint externo), aceita o trustScore original sem limitação.
+    // Para serviços externos/dinâmicos, limita preventivamente o trustScore entre 10 e 80.
     const rawScore = typeof service.trustScore === 'number' && !isNaN(service.trustScore) ? service.trustScore : 50;
-    const sanitizedTrustScore = Math.min(Math.max(rawScore, 10), 80);
+    const sanitizedTrustScore = isNativeId
+      ? Math.min(Math.max(rawScore, 0), 100)   // Nativos: intervalo completo [0, 100]
+      : Math.min(Math.max(rawScore, 10), 80);  // Externos: intervalo restrito [10, 80]
 
     const validLevels: ('LOW' | 'MEDIUM' | 'HIGH')[] = ['LOW', 'MEDIUM', 'HIGH'];
     const sanitizedSecurityLevel = validLevels.includes(service.securityLevel) ? service.securityLevel : 'MEDIUM';
@@ -65,6 +81,15 @@ export class CapabilityRegistry {
   }
 
   /**
+   * @description Sinónimo ergonómico para registar um serviço no catálogo.
+   * @param {Service} service - Serviço a registar.
+   * @returns {Promise<void>}
+   */
+  async registerService(service: Service): Promise<void> {
+    return this.register(service);
+  }
+
+  /**
    * @description Remove um microserviço do catálogo através do seu identificador.
    *
    * @param {string} serviceId - Identificador único do serviço a remover.
@@ -72,6 +97,7 @@ export class CapabilityRegistry {
    * @audit Invalida a cache para que o nó deixe de ser selecionado pelo motor de correspondência.
    */
   async unregister(serviceId: string): Promise<boolean> {
+    CapabilityRegistry.localHandlers.delete(serviceId);
     const result = await ServiceRepository.delete({ id: serviceId });
     const success = result.affected !== 0;
     if (success) {
@@ -110,8 +136,18 @@ export class CapabilityRegistry {
       return cached;
     }
     const services = await ServiceRepository.findBy({ active: true });
-    await RegistryCache.setServices(services);
-    return services;
+
+    // MEDIDA DE SEGURANÇA: Filtra serviços cujo batimento cardíaco (heartbeat) está desatualizado há mais de 2 minutos.
+    // Serviços sem endpoint remoto (apenas manipuladores em memória) não emitem heartbeat e não são filtrados.
+    const heartbeatThreshold = new Date(Date.now() - 2 * 60 * 1000);
+    const activeServices = services.filter(svc => {
+      if (!svc.endpoint) return true; // Serviços locais em memória não precisam de heartbeat
+      if (!svc.lastHeartbeat) return false;
+      return new Date(svc.lastHeartbeat) >= heartbeatThreshold;
+    });
+
+    await RegistryCache.setServices(activeServices);
+    return activeServices;
   }
 
   /**
@@ -129,19 +165,48 @@ export class CapabilityRegistry {
     const cachedMatches = await RegistryCache.getMatches(normalized);
     
     if (cachedMatches) {
-      // Clona o vetor em cache para evitar mutações acidentais da ordenação original
-      matches = [...cachedMatches];
+      // Clona o vetor em cache para evitar mutações e reanexa manipuladores locais perdidos na serialização
+      matches = cachedMatches.map(m => {
+        const localHandler = CapabilityRegistry.localHandlers.get(m.service.id);
+        return {
+          ...m,
+          service: {
+            ...m.service,
+            handler: m.service.handler || localHandler
+          }
+        };
+      });
     } else {
       const parts = normalized.split(/\s+/);
-      if (parts.length < 2) return [];
-      const [reqVerb, reqTarget] = parts;
+      if (parts.length === 0 || !parts[0]) return [];
+      const reqVerb = parts[0];
+      const reqTarget = parts.length > 1 ? parts.slice(1).join(' ') : '*';
+      const reqTargetUnder = parts.length > 1 ? parts.slice(1).join('_') : '*';
       const all = await this.getAllServices();
 
       for (const svc of all) {
         const caps = svc.capabilities as Capability[];
         for (const cap of caps) {
-          if (cap.verb === reqVerb && cap.target.toUpperCase() === reqTarget) {
+          const capTarget = cap.target.toUpperCase();
+          const capTargetNorm = capTarget.replace(/\s+/g, ' ');
+          const capTargetUnder = capTarget.replace(/\s+/g, '_');
+          const isExactMatch = capTarget === reqTarget || 
+                               capTargetNorm === reqTarget || 
+                               capTargetUnder === reqTargetUnder || 
+                               capTargetNorm === reqTargetUnder || 
+                               capTargetUnder === reqTarget;
+          const isWildcardMatch = capTarget === '*' || capTarget === 'DEFAULT' || reqTarget === '*';
+
+          if (cap.verb === reqVerb && (isExactMatch || isWildcardMatch)) {
+            const localHandler = CapabilityRegistry.localHandlers.get(svc.id);
+            // Ignora serviços locais órfãos (sem endpoint HTTP e sem handler em memória no processo atual)
+            if (!svc.endpoint && !localHandler) {
+              continue;
+            }
+
             let score = svc.trustScore / 100;
+            // A correspondência exata de alvo (target) tem prioridade mandatória sobre wildcards genéricos '*'
+            if (isExactMatch) score += 5.0;
             // Bónus de pontuação para níveis elevados de segurança; penalização para níveis baixos
             if (svc.securityLevel === 'HIGH') score *= 1.1;
             if (svc.securityLevel === 'LOW') score *= 0.9;
@@ -153,6 +218,7 @@ export class CapabilityRegistry {
                 trustScore: svc.trustScore,
                 securityLevel: svc.securityLevel as any,
                 endpoint: svc.endpoint,
+                handler: localHandler,
               } as Service,
               capability: cap,
               score,
@@ -167,12 +233,8 @@ export class CapabilityRegistry {
     // Ajuste dinâmico preditivo da pontuação com base nas métricas reais de latência e falhas
     const collector = ServiceMetricsCollector.getInstance();
     for (const match of matches) {
-      let baseScore = match.service.trustScore / 100;
-      if (match.service.securityLevel === 'HIGH') baseScore *= 1.1;
-      if (match.service.securityLevel === 'LOW') baseScore *= 0.9;
-      
       const healthMultiplier = collector.getHealthScore(match.service.id, 100);
-      match.score = baseScore * healthMultiplier;
+      match.score = match.score * healthMultiplier;
     }
 
     // Reordena os candidatos após a incorporação da penalização de saúde em tempo real

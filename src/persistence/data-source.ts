@@ -24,10 +24,17 @@ import { DeadLetterQueue } from './entities/DeadLetterQueue';
 import { User } from './entities/User';
 import { ApiKey } from './entities/ApiKey';
 import { AuditLog } from './entities/AuditLog';
+import { CognitivePattern } from './entities/CognitivePattern';
 import dotenv from 'dotenv';
 
 // Carrega as variáveis de ambiente a partir do ficheiro .env
 dotenv.config();
+
+// Verificação estrita de credenciais de base de dados em ambiente de produção
+const dbPassword = process.env.DB_PASSWORD;
+if (!dbPassword && process.env.NODE_ENV === 'production') {
+  throw new Error('[SEGURANÇA CRÍTICA] A variável de ambiente DB_PASSWORD não está definida. O servidor não pode arrancar em modo de produção com credenciais padrão.');
+}
 
 /**
  * @description Instância principal do DataSource TypeORM ligada ao PostgreSQL.
@@ -38,11 +45,26 @@ export const AppDataSource = new DataSource({
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),
   username: process.env.DB_USER || 'inp',
-  password: process.env.DB_PASSWORD || 'inp123',
+  password: dbPassword || 'inp123',
   database: process.env.DB_NAME || 'inp',
   // NOTA DE SEGURANÇA/AUDITORIA: A sincronização automática de esquema só deve ser permitida
   // em ambiente de desenvolvimento local. Em produção devem utilizar-se migrações controladas.
   synchronize: process.env.NODE_ENV === 'development' || !process.env.NODE_ENV,
   logging: false,
-  entities: [Execution, ServiceRegistration, SagaState, QueueJob, DeadLetterQueue, User, ApiKey, AuditLog],
+  /**
+   * Configuração otimizada do pool de conexões para concorrência elevada.
+   * max: 50 conexões simultâneas suporta filas SKIP LOCKED com múltiplos nós.
+   * idleTimeoutMillis: liberta conexões inativas após 30s para reduzir carga no PostgreSQL.
+   * connectionTimeoutMillis: rejeita imediatamente pedidos que não obtenham conexão em 5s.
+   * statement_timeout: aborta consultas com duração superior a 30s para evitar bloqueios transacionais prolongados.
+   * @security Previne saturação do pool e exaustão de descritores de ficheiro do processo.
+   * @audit Configuração auditável que impacta diretamente a capacidade de processamento concorrente de Sagas.
+   */
+  extra: {
+    max: parseInt(process.env.DB_POOL_MAX || '50', 10),
+    idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_TIMEOUT_MS || '30000', 10),
+    connectionTimeoutMillis: parseInt(process.env.DB_POOL_CONNECTION_TIMEOUT_MS || '5000', 10),
+    statement_timeout: parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || '30000', 10),
+  },
+  entities: [Execution, ServiceRegistration, SagaState, QueueJob, DeadLetterQueue, User, ApiKey, AuditLog, CognitivePattern],
 });

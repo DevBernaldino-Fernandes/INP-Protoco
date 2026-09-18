@@ -13,6 +13,7 @@
  */
 
 import axios from 'axios';
+import { NetworkSecurity } from './network-security';
 
 /**
  * @description Gestor responsável por emitir avisos de incidentes a operadores e canais externos.
@@ -27,7 +28,7 @@ export class AlertManager {
    * @param {any} details - Dados contextuais detalhados e carga útil associada ao erro.
    * @returns {Promise<void>} Promessa resolvida após o envio ou registo do alerta.
    * @security Encapsula a chamada externa num bloco try/catch para garantir que uma falha no webhook
-   * nunca derruba o fluxo transacional principal.
+   * nunca derruba o fluxo transacional principal. Protegido contra SSRF e com timeout de 10s.
    * @audit Regista carimbo temporal e detalhes forenses do erro para auditoria pós-incidente.
    */
   static async sendAlert(title: string, details: any): Promise<void> {
@@ -38,9 +39,15 @@ export class AlertManager {
     }
 
     try {
+      // MEDIDA DE SEGURANÇA: Validação de destino do alerta contra SSRF
+      NetworkSecurity.validateEndpoint(webhookUrl);
+
       console.log(`[Alert Manager] A despachar alerta via webhook para: ${title}`);
       await axios.post(webhookUrl, {
         text: `⚠️ *[ALERTA DE SISTEMA INP]*: ${title}\n*Carimbo Temporal:* ${new Date().toISOString()}\n*Detalhes:* \`\`\`json\n${JSON.stringify(details, null, 2)}\n\`\`\``
+      }, {
+        timeout: 10000,
+        maxRedirects: 0
       });
       console.log('[Alert Manager] Notificação de webhook transmitida com sucesso.');
     } catch (err: any) {

@@ -221,6 +221,118 @@ const presets = {
   }
 }`
   },
+  'dsl-stream': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "streaming_ai_response" {
+  CONTEXT {
+    prompt: "Gere um plano de arquitetura resiliente para microsserviços",
+    streamChannel: "sse_realtime_channel",
+    chunkSize: 64
+  }
+  REQUIRE {
+    STREAM AI_RESPONSE
+  }
+  FLOW {
+    SEQUENCE {
+      STREAM AI_RESPONSE
+    }
+  }
+  OUTPUT {
+    FORMAT "event"
+  }
+}`
+  },
+  'dsl-attest': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "audit_and_attest_state" {
+  CONTEXT {
+    auditScope: "SOC2_FINANCIAL_COMPLIANCE",
+    transactionId: "tx_998822",
+    amount: 15000.00
+  }
+  REQUIRE {
+    ATTEST PROOF_OF_STATE
+  }
+  FLOW {
+    SEQUENCE {
+      ATTEST PROOF_OF_STATE
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`
+  },
+  'dsl-adapt': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "intelligent_dynamic_routing" {
+  CONTEXT {
+    routingStrategy: "EPSILON_GREEDY",
+    epsilon: 0.1,
+    candidates: ["payment-provider-eu", "payment-provider-us", "payment-provider-latam"]
+  }
+  REQUIRE {
+    ADAPT PAYMENT_PROVIDER
+  }
+  FLOW {
+    SEQUENCE {
+      ADAPT PAYMENT_PROVIDER
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`
+  },
+  'dsl-escalate': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "high_risk_human_supervision" {
+  CONTEXT {
+    amount: 75000.00,
+    user_id: "usr_vip_99",
+    riskScore: 0.92,
+    supervisorRole: "COMPLIANCE_OFFICER",
+    slaTimeoutSeconds: 300
+  }
+  REQUIRE {
+    ESCALATE FRAUD_SUSPICION
+  }
+  FLOW {
+    SEQUENCE {
+      ESCALATE FRAUD_SUSPICION
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`
+  },
+  'dsl-reason': {
+    type: 'dsl',
+    lang: 'INP DSL',
+    text: `INTENT "agentic_chain_of_thought" {
+  CONTEXT {
+    hypothesis: "Aprovação de limite de crédito corporativo",
+    evidence: { creditScore: 820, annualRevenue: 2500000, defaultHistory: false },
+    confidenceThreshold: 0.85
+  }
+  REQUIRE {
+    REASON CREDIT_DECISION
+  }
+  FLOW {
+    SEQUENCE {
+      REASON CREDIT_DECISION
+    }
+  }
+  OUTPUT {
+    FORMAT "json"
+  }
+}`
+  },
   'natural-purchase': {
     type: 'natural',
     lang: 'Linguagem Humana',
@@ -1665,7 +1777,9 @@ function setupTelemetryListener() {
   const liveContainer = document.getElementById('live-visualizer-container');
   
   console.log('[Telemetry] Connecting to SSE telemetry...');
-  const source = new EventSource('/api/telemetry');
+  const authToken = localStorage.getItem('inp_auth_token');
+  const sseUrl = authToken ? `/api/telemetry?token=${encodeURIComponent(authToken)}` : '/api/telemetry';
+  const source = new EventSource(sseUrl);
   
   source.onopen = () => {
     console.log('[Telemetry] SSE connected');
@@ -4415,6 +4529,762 @@ response = client.execute(flow)`
 # Audita a trilha criptográfica de transações
 flow = Step("AUDIT TRANSACTION_TRAIL")
 response = client.execute(flow)`
+  },
+  COALESCE: {
+    name: 'COALESCE',
+    category: 'Verbo',
+    desc: 'Single-Flight Pattern: Colapsa requisições concorrentes idênticas em voo numa única execução real, devolvendo o mesmo resultado para todas e mitigando o efeito Thundering Herd.',
+    analogy: 'Como 50 pessoas no mesmo prédio chamando o mesmo elevador para o mesmo andar: o elevador faz apenas uma viagem e transporta todos juntos.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "coalesce_metrics" {
+  REQUIRE {
+    COALESCE METRICS_SNAPSHOT
+  }
+  FLOW {
+    SEQUENCE {
+      COALESCE METRICS_SNAPSHOT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "COALESCE METRICS_SNAPSHOT",
+  "verb": "COALESCE",
+  "target": "METRICS_SNAPSHOT"
+}`,
+    python: `from inp_sdk import Step
+
+# Single-flight deduplicado
+flow = Step("COALESCE METRICS_SNAPSHOT")
+response = client.execute(flow)`
+  },
+  MEMOIZE: {
+    name: 'MEMOIZE',
+    category: 'Verbo',
+    desc: 'Cache-Aside Atómico: Memoiza resultados de computação ou consulta em memória volátil com hashing SHA-256 e TTL configurável, contornando chamadas de rede repetitivas.',
+    analogy: 'Como anotar na lousa o resultado de uma conta complexa para não ter de refazê-la toda vez que alguém perguntar.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "memo_calc" {
+  REQUIRE {
+    MEMOIZE TAX_CALCULATION
+  }
+  FLOW {
+    SEQUENCE {
+      MEMOIZE TAX_CALCULATION
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "MEMOIZE TAX_CALCULATION",
+  "verb": "MEMOIZE",
+  "target": "TAX_CALCULATION"
+}`,
+    python: `from inp_sdk import Step
+
+# Memoização transparente com TTL
+flow = Step("MEMOIZE TAX_CALCULATION")
+response = client.execute(flow)`
+  },
+  GUARD: {
+    name: 'GUARD',
+    category: 'Verbo',
+    desc: 'Fail-Fast Invariants: Avalia invariantes críticas e regras de negócio em memória antes de consumir recursos de rede, abortando o fluxo imediatamente se violadas.',
+    analogy: 'Como o segurança na porta do banco verificando documento e detector de metal antes de permitir a entrada na agência.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "guard_order" {
+  REQUIRE {
+    GUARD "amount > 0"
+  }
+  FLOW {
+    SEQUENCE {
+      GUARD "amount > 0"
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "GUARD amount > 0",
+  "verb": "GUARD",
+  "target": "amount > 0"
+}`,
+    python: `from inp_sdk import Step
+
+# Bloqueio preventivo sem overhead de rede
+flow = Step("GUARD amount > 0")
+response = client.execute(flow)`
+  },
+  THROTTLE: {
+    name: 'THROTTLE',
+    category: 'Verbo',
+    desc: 'Token Bucket Pacing: Limita e modula a taxa de requisições por segundo contra serviços externos frágeis ou limitados por rate-limits, enfileirando ou contendo picos.',
+    analogy: 'Como a catraca de um metrô que controla o fluxo de passageiros para que a plataforma de embarque não transborde.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "throttle_legacy" {
+  REQUIRE {
+    THROTTLE LEGACY_CRM
+  }
+  FLOW {
+    SEQUENCE {
+      THROTTLE LEGACY_CRM
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "THROTTLE LEGACY_CRM",
+  "verb": "THROTTLE",
+  "target": "LEGACY_CRM"
+}`,
+    python: `from inp_sdk import Step
+
+# Cadência controlada via Token Bucket
+flow = Step("THROTTLE LEGACY_CRM")
+response = client.execute(flow)`
+  },
+  BATCH: {
+    name: 'BATCH',
+    category: 'Verbo',
+    desc: 'Chunking Declarativo: Divide automaticamente coleções volumosas em pedaços seguros (chunks) pré-dimensionados, eliminando o problema de sobrecarga N+1.',
+    analogy: 'Como empacotar 1.000 caixas de mudança em lotes de 20 por caminhão em vez de levar uma por uma com a mão.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "batch_process" {
+  REQUIRE {
+    BATCH CHUNK_ORDERS
+  }
+  FLOW {
+    SEQUENCE {
+      BATCH CHUNK_ORDERS
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "BATCH CHUNK_ORDERS",
+  "verb": "BATCH",
+  "target": "CHUNK_ORDERS"
+}`,
+    python: `from inp_sdk import Step
+
+# Processamento fracionado em lotes seguros
+flow = Step("BATCH CHUNK_ORDERS")
+response = client.execute(flow)`
+  },
+  DEFER: {
+    name: 'DEFER',
+    category: 'Verbo',
+    desc: 'Transactional Outbox: Desacopla tarefas não-críticas do ciclo síncrono do motor, persistindo a intenção na fila PostgreSQL (queue_jobs) para execução em segundo plano.',
+    analogy: 'Como depositar um cheque na caixa de correspondência do banco para compensação noturna, liberando o cliente imediatamente.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "defer_email" {
+  REQUIRE {
+    DEFER EMAIL_NOTIFICATION
+  }
+  FLOW {
+    SEQUENCE {
+      DEFER EMAIL_NOTIFICATION
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "DEFER EMAIL_NOTIFICATION",
+  "verb": "DEFER",
+  "target": "EMAIL_NOTIFICATION"
+}`,
+    python: `from inp_sdk import Step
+
+# Agendamento assíncrono via Outbox
+flow = Step("DEFER EMAIL_NOTIFICATION")
+response = client.execute(flow)`
+  },
+  MERGE: {
+    name: 'MERGE',
+    category: 'Verbo',
+    desc: 'Consolidação Profunda: Combina declarativamente múltiplos fragmentos de dados e saídas de passos anteriores em um único objeto coerente e estruturado.',
+    analogy: 'Como montar uma cesta de café da manhã combinando itens de diferentes fornecedores em um pacote único.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "merge_profile" {
+  REQUIRE {
+    MERGE USER_AGGREGATE
+  }
+  FLOW {
+    SEQUENCE {
+      MERGE USER_AGGREGATE
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "MERGE USER_AGGREGATE",
+  "verb": "MERGE",
+  "target": "USER_AGGREGATE"
+}`,
+    python: `from inp_sdk import Step
+
+# Consolidação profunda de fragmentos
+flow = Step("MERGE USER_AGGREGATE")
+response = client.execute(flow)`
+  },
+  AWAIT: {
+    name: 'AWAIT',
+    category: 'Verbo',
+    desc: 'Suspensão Reativa de Saga: Pausa a execução do fluxo e persiste o estado da Saga como SUSPENDED no PostgreSQL, liberando threads e aguardando retoma via webhook ou API.',
+    analogy: 'Como colocar um marcador de página num livro e fechar o livro na gaveta até que o correio traga o próximo capítulo.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "await_callback" {
+  REQUIRE {
+    AWAIT PAYMENT_CONFIRMATION
+  }
+  FLOW {
+    SEQUENCE {
+      AWAIT PAYMENT_CONFIRMATION
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "AWAIT PAYMENT_CONFIRMATION",
+  "verb": "AWAIT",
+  "target": "PAYMENT_CONFIRMATION"
+}`,
+    python: `from inp_sdk import Step
+
+# Suspensão reativa liberando recursos do motor
+flow = Step("AWAIT PAYMENT_CONFIRMATION")
+response = client.execute(flow)`
+  },
+  PROBE: {
+    name: 'PROBE',
+    category: 'Verbo',
+    desc: 'Zero-IO Health Check: Consulta em tempo real o status operacional e latência de um microsserviço diretamente da memória do ServiceMetricsCollector (<1ms) sem I/O de disco.',
+    analogy: 'Como o médico verificando o pulso do paciente no punho em 2 segundos sem precisar fazer exames laboratoriais demorados.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "probe_service" {
+  REQUIRE {
+    PROBE PAYMENT_GATEWAY
+  }
+  FLOW {
+    SEQUENCE {
+      PROBE PAYMENT_GATEWAY
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "PROBE PAYMENT_GATEWAY",
+  "verb": "PROBE",
+  "target": "PAYMENT_GATEWAY"
+}`,
+    python: `from inp_sdk import Step
+
+# Inspeção ultrarrápida de saúde em memória
+flow = Step("PROBE PAYMENT_GATEWAY")
+response = client.execute(flow)`
+  },
+  SHADOW: {
+    name: 'SHADOW',
+    category: 'Verbo',
+    desc: 'Canary / Dark Launching: Duplica a carga e dispara requisições assíncronas em segundo plano para um novo serviço experimental sem impactar o tempo de resposta do cliente.',
+    analogy: 'Como um copiloto novato observando e praticando em simulador espelhado enquanto o piloto oficial conduz o voo de verdade.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "shadow_canary" {
+  REQUIRE {
+    SHADOW CANARY_PAYMENT
+  }
+  FLOW {
+    SEQUENCE {
+      SHADOW CANARY_PAYMENT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "SHADOW CANARY_PAYMENT",
+  "verb": "SHADOW",
+  "target": "CANARY_PAYMENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Disparo fire-and-forget para nó sombra
+flow = Step("SHADOW CANARY_PAYMENT")
+response = client.execute(flow)`
+  },
+  REDACT: {
+    name: 'REDACT',
+    category: 'Verbo',
+    desc: 'Sanitização de Dados (LGPD/PCI): Substitui campos confidenciais (senhas, cartões, tokens, CPFs) por máscaras irreversíveis antes da persistência em logs ou transmissão.',
+    analogy: 'Como usar caneta preta permanente para tarjar dados confidenciais em documentos oficiais antes de torná-los públicos.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "redact_secrets" {
+  REQUIRE {
+    REDACT PASSWORD_TOKEN
+  }
+  FLOW {
+    SEQUENCE {
+      REDACT PASSWORD_TOKEN
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "REDACT PASSWORD_TOKEN",
+  "verb": "REDACT",
+  "target": "PASSWORD_TOKEN"
+}`,
+    python: `from inp_sdk import Step
+
+# Mascaramento e conformidade LGPD/PCI
+flow = Step("REDACT PASSWORD_TOKEN")
+response = client.execute(flow)`
+  },
+  CHECKPOINT: {
+    name: 'CHECKPOINT',
+    category: 'Verbo',
+    desc: 'Savepoint Granular de Saga: Persiste um marco intermediário do estado de execução na base de dados, permitindo recuperação cirúrgica caso falhas ocorram mais adiante.',
+    analogy: 'Como salvar o jogo antes de entrar na batalha contra o chefe de fase, para não ter que reiniciar desde a primeira fase.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "checkpoint_step" {
+  REQUIRE {
+    CHECKPOINT STAGE_1_PASSED
+  }
+  FLOW {
+    SEQUENCE {
+      CHECKPOINT STAGE_1_PASSED
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "CHECKPOINT STAGE_1_PASSED",
+  "verb": "CHECKPOINT",
+  "target": "STAGE_1_PASSED"
+}`,
+    python: `from inp_sdk import Step
+
+# Gravação de savepoint intermediário
+flow = Step("CHECKPOINT STAGE_1_PASSED")
+response = client.execute(flow)`
+  },
+  SIMULATE: {
+    name: 'SIMULATE',
+    category: 'Verbo',
+    desc: 'Chaos & Mock Testing: Injeta latência artificial controlada ou falhas programadas para simular degradação de rede e validar a resiliência do sistema em homologação.',
+    analogy: 'Como um treino de simulação de incêndio na empresa para garantir que todas as portas e alarmes funcionem sob emergência.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "simulate_chaos" {
+  REQUIRE {
+    SIMULATE LATENCY_200MS
+  }
+  FLOW {
+    SEQUENCE {
+      SIMULATE LATENCY_200MS
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "SIMULATE LATENCY_200MS",
+  "verb": "SIMULATE",
+  "target": "LATENCY_200MS"
+}`,
+    python: `from inp_sdk import Step
+
+# Injeção de latência controlada e chaos testing
+flow = Step("SIMULATE LATENCY_200MS")
+response = client.execute(flow)`
+  },
+  FANOUT: {
+    name: 'FANOUT',
+    category: 'Verbo',
+    desc: 'Bounded Concurrency: Despacha uma carga de trabalho paralela para múltiplos nós com limite estrito de concorrência, impedindo o esgotamento do pool de sockets e da heap.',
+    analogy: 'Como abrir 4 guichês de atendimento ao mesmo tempo no banco, garantindo que os clientes sejam atendidos com rapidez sem tumultuar a agência.',
+    preset: 'dsl-advanced',
+    dsl: `INTENT "fanout_tasks" {
+  REQUIRE {
+    FANOUT MULTI_NOTIFY
+  }
+  FLOW {
+    SEQUENCE {
+      FANOUT MULTI_NOTIFY
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "FANOUT MULTI_NOTIFY",
+  "verb": "FANOUT",
+  "target": "MULTI_NOTIFY"
+}`,
+    python: `from inp_sdk import Step
+
+# Paralelismo controlado com contrapressão
+flow = Step("FANOUT MULTI_NOTIFY")
+response = client.execute(flow)`
+  },
+  STREAM: {
+    name: 'STREAM',
+    category: 'Verbo',
+    desc: 'Emissão Progressiva em Tempo Real: Despacha deltas, tokens ou chunks de dados através de Server-Sent Events (SSE) ou WebSockets sem travar o motor, viabilizando UIs reativas e IA generativa.',
+    analogy: 'Como assistir a um filme por streaming de vídeo em alta resolução enquanto ele é descarregado, em vez de esperar o download de 2 horas antes de dar play.',
+    preset: 'dsl-stream',
+    dsl: `INTENT "stream_gen_ai" {
+  REQUIRE {
+    STREAM AI_RESPONSE
+  }
+  FLOW {
+    SEQUENCE {
+      STREAM AI_RESPONSE
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "STREAM AI_RESPONSE",
+  "verb": "STREAM",
+  "target": "AI_RESPONSE"
+}`,
+    python: `from inp_sdk import Step
+
+# Transmissão de eventos em tempo real via SSE
+flow = Step("STREAM AI_RESPONSE")
+response = client.execute(flow)`
+  },
+  ATTEST: {
+    name: 'ATTEST',
+    category: 'Verbo',
+    desc: 'Prova Criptográfica Inviolável: Gera um recibo forense selado com HMAC-SHA256 contendo timestamp, hash dos dados e identificador da execução, garantindo não-repúdio SOC2 e LGPD.',
+    analogy: 'Como a chancela em cartório com carimbo em relevo e fita holográfica atestando a autenticidade e inviolabilidade de uma escritura pública.',
+    preset: 'dsl-attest',
+    dsl: `INTENT "attest_audit" {
+  REQUIRE {
+    ATTEST EXECUTION_STATE
+  }
+  FLOW {
+    SEQUENCE {
+      ATTEST EXECUTION_STATE
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "ATTEST EXECUTION_STATE",
+  "verb": "ATTEST",
+  "target": "EXECUTION_STATE"
+}`,
+    python: `from inp_sdk import Step
+
+# Selagem forense com prova HMAC-SHA256
+flow = Step("ATTEST EXECUTION_STATE")
+response = client.execute(flow)`
+  },
+  ADAPT: {
+    name: 'ADAPT',
+    category: 'Verbo',
+    desc: 'Roteamento com Multi-Armed Bandit: Algoritmo adaptativo (epsilon-greedy) que seleciona autonomamente o provedor de microsserviço com melhor desempenho real e menor taxa de erros.',
+    analogy: 'Como o aplicativo de trânsito (Waze) calculando rotas em tempo real e desviando o motorista de acidentes antes mesmo dele ficar preso no engarrafamento.',
+    preset: 'dsl-adapt',
+    dsl: `INTENT "adapt_routing" {
+  REQUIRE {
+    ADAPT PROVIDER_A PROVIDER_B
+  }
+  FLOW {
+    SEQUENCE {
+      ADAPT PROVIDER_A PROVIDER_B
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "ADAPT PROVIDER_A PROVIDER_B",
+  "verb": "ADAPT",
+  "target": "PROVIDER_A PROVIDER_B"
+}`,
+    python: `from inp_sdk import Step
+
+# Roteamento inteligente adaptativo
+flow = Step("ADAPT PROVIDER_A PROVIDER_B")
+response = client.execute(flow)`
+  },
+  ESCALATE: {
+    name: 'ESCALATE',
+    category: 'Verbo',
+    desc: 'Human-in-the-Loop Supervision: Suspende automaticamente a Saga perante transações suspeitas ou de alto valor, gerando um token de aprovação e SLA de tempo para decisão humana.',
+    analogy: 'Como o sistema de segurança que bloqueia uma transferência bancária de alto valor e envia notificação imediata para aprovação expressa do gerente de conta.',
+    preset: 'dsl-escalate',
+    dsl: `INTENT "escalate_transfer" {
+  REQUIRE {
+    ESCALATE COMPLIANCE_MANAGER
+  }
+  FLOW {
+    SEQUENCE {
+      ESCALATE COMPLIANCE_MANAGER
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "ESCALATE COMPLIANCE_MANAGER",
+  "verb": "ESCALATE",
+  "target": "COMPLIANCE_MANAGER"
+}`,
+    python: `from inp_sdk import Step
+
+# Suspensão supervisionada com SLA e token
+flow = Step("ESCALATE COMPLIANCE_MANAGER")
+response = client.execute(flow)`
+  },
+  REASON: {
+    name: 'REASON',
+    category: 'Verbo',
+    desc: 'Deliberação Racional Estruturada: Executa reflexão agêntica (Chain-of-Thought) avaliando hipóteses, prós e contras e níveis de confiança com fundamentação auditável da decisão.',
+    analogy: 'Como um conselho de médicos especialistas deliberando em junta sobre o diagnóstico de um paciente antes de prescrever uma cirurgia.',
+    preset: 'dsl-reason',
+    dsl: `INTENT "reason_decision" {
+  REQUIRE {
+    REASON FRAUD_ASSESSMENT
+  }
+  FLOW {
+    SEQUENCE {
+      REASON FRAUD_ASSESSMENT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "REASON FRAUD_ASSESSMENT",
+  "verb": "REASON",
+  "target": "FRAUD_ASSESSMENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Deliberação reflexiva estruturada CoT
+flow = Step("REASON FRAUD_ASSESSMENT")
+response = client.execute(flow)`
+  },
+  EMBED: {
+    name: 'EMBED',
+    category: 'Verbo',
+    desc: 'Gera representações vetoriais densas normalizadas (L2 = 1.0) de forma 100% determinística e offline a partir de textos e documentos, sem dependência de APIs externas ou tokens pagos.',
+    analogy: 'Como extrair as impressões digitais de um texto: converte frases em coordenadas matemáticas precisas em um espaço multidimensional.',
+    preset: 'dsl-ai-native',
+    dsl: `INTENT "generate_semantic_embedding" {
+  REQUIRE {
+    EMBED DOCUMENT
+  }
+  FLOW {
+    SEQUENCE {
+      EMBED DOCUMENT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "EMBED DOCUMENT",
+  "verb": "EMBED",
+  "target": "DOCUMENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Geração de embedding vetorial denso soberano
+flow = Step("EMBED DOCUMENT")
+response = client.execute(flow)`
+  },
+  VECTOR_SEARCH: {
+    name: 'VECTOR_SEARCH',
+    category: 'Verbo',
+    desc: 'Executa busca e ranqueamento semântico por similaridade de cosseno em memória diretamente sobre vetores e candidatos, viabilizando pipelines de RAG instantâneos de baixíssima latência.',
+    analogy: 'Como um bibliotecário com memória fotográfica instantânea que localiza os 5 livros com conceitos mais parecidos à sua pergunta em milissegundos.',
+    preset: 'dsl-ai-native',
+    dsl: `INTENT "semantic_vector_search" {
+  REQUIRE {
+    VECTOR_SEARCH KNOWLEDGE_BASE
+  }
+  FLOW {
+    SEQUENCE {
+      VECTOR_SEARCH KNOWLEDGE_BASE
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "VECTOR_SEARCH KNOWLEDGE_BASE",
+  "verb": "VECTOR_SEARCH",
+  "target": "KNOWLEDGE_BASE"
+}`,
+    python: `from inp_sdk import Step
+
+# Busca vetorial semântica instantânea por cosseno
+flow = Step("VECTOR_SEARCH KNOWLEDGE_BASE")
+response = client.execute(flow)`
+  },
+  SPLIT: {
+    name: 'SPLIT',
+    category: 'Verbo',
+    desc: 'Distribuição financeira multidirecional e rateio contábil com reconciliação matemática estrita de centavos, assegurando que o somatório de repasses seja rigorosamente idêntico ao total liquidado.',
+    analogy: 'Como o garçom fechando a conta de uma mesa dividida entre vários amigos: cada um paga sua parte exata em centavos e a soma bate 100% com a fatura, sem sobrar ou faltar 1 centavo.',
+    preset: 'dsl-financial',
+    dsl: `INTENT "financial_split_settlement" {
+  REQUIRE {
+    SPLIT PAYMENT_SETTLEMENT
+  }
+  FLOW {
+    SEQUENCE {
+      SPLIT PAYMENT_SETTLEMENT
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "SPLIT PAYMENT_SETTLEMENT",
+  "verb": "SPLIT",
+  "target": "PAYMENT_SETTLEMENT"
+}`,
+    python: `from inp_sdk import Step
+
+# Rateio financeiro com reconciliação estrita de centavos
+flow = Step("SPLIT PAYMENT_SETTLEMENT")
+response = client.execute(flow)`
+  },
+  ESCROW: {
+    name: 'ESCROW',
+    category: 'Verbo',
+    desc: 'Custódia transacional temporária e segura com selo criptográfico HMAC SHA-256 inviolável, liberação condicional com chave secreta, cancelamento com estorno e expiração temporal controlada (TTL).',
+    analogy: 'Como um cofre de custódia notarial: o comprador deposita o dinheiro, o cofre emite um selo lacrado e só abre para o vendedor quando o produto for entregue e verificado.',
+    preset: 'dsl-financial',
+    dsl: `INTENT "custody_escrow_deposit" {
+  REQUIRE {
+    ESCROW FUNDS
+  }
+  FLOW {
+    SEQUENCE {
+      ESCROW FUNDS
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "ESCROW FUNDS",
+  "verb": "ESCROW",
+  "target": "FUNDS"
+}`,
+    python: `from inp_sdk import Step
+
+# Custódia transacional com selo criptográfico HMAC
+flow = Step("ESCROW FUNDS")
+response = client.execute(flow)`
+  },
+  POLL: {
+    name: 'POLL',
+    category: 'Verbo',
+    desc: 'Sondagem assíncrona cooperativa não-bloqueante com recuo exponencial (exponential backoff), verificação de predicados e limites máximos de tentativas para reconciliação com sistemas lentos.',
+    analogy: 'Como o rastreador de encomenda que verifica o status no centro de distribuição em intervalos crescentes (1s, 2s, 4s) até confirmar que o pacote saiu para entrega.',
+    preset: 'dsl-resilience',
+    dsl: `INTENT "poll_order_completion" {
+  REQUIRE {
+    POLL ORDER_STATUS
+  }
+  FLOW {
+    SEQUENCE {
+      POLL ORDER_STATUS
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "POLL ORDER_STATUS",
+  "verb": "POLL",
+  "target": "ORDER_STATUS"
+}`,
+    python: `from inp_sdk import Step
+
+# Polling assíncrono cooperativo com backoff exponencial
+flow = Step("POLL ORDER_STATUS")
+response = client.execute(flow)`
+  },
+  INVALIDATE: {
+    name: 'INVALIDATE',
+    category: 'Verbo',
+    desc: 'Expurgo cirúrgico de entradas de cache por chave direta, padrão com curingas (wildcards) ou tags semânticas transversais, assegurando coerência imediata entre leitura e escrita.',
+    analogy: 'Como o administrador de um prédio que apaga imediatamente o quadro de avisos antigo assim que um novo regulamento entra em vigor.',
+    preset: 'dsl-cache',
+    dsl: `INTENT "cache_eviction" {
+  REQUIRE {
+    INVALIDATE PRODUCT_CACHE
+  }
+  FLOW {
+    SEQUENCE {
+      INVALIDATE PRODUCT_CACHE
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "INVALIDATE PRODUCT_CACHE",
+  "verb": "INVALIDATE",
+  "target": "PRODUCT_CACHE"
+}`,
+    python: `from inp_sdk import Step
+
+# Invalidação cirúrgica de cache por tag ou padrão
+flow = Step("INVALIDATE PRODUCT_CACHE")
+response = client.execute(flow)`
+  },
+  DRIFT_DETECT: {
+    name: 'DRIFT_DETECT',
+    category: 'Verbo',
+    desc: 'Detecção contínua de desvios estruturais, discrepâncias de tipos e campos inesperados ou faltantes entre cargas úteis dinâmicas e o contrato canônico original.',
+    analogy: 'Como um inspetor de qualidade na linha de montagem que compara cada peça com a planta arquitetônica de engenharia e aponta qualquer milímetro fora de especificação.',
+    preset: 'dsl-governance',
+    dsl: `INTENT "schema_drift_detection" {
+  REQUIRE {
+    DRIFT_DETECT PAYLOAD_SCHEMA
+  }
+  FLOW {
+    SEQUENCE {
+      DRIFT_DETECT PAYLOAD_SCHEMA
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "DRIFT_DETECT PAYLOAD_SCHEMA",
+  "verb": "DRIFT_DETECT",
+  "target": "PAYLOAD_SCHEMA"
+}`,
+    python: `from inp_sdk import Step
+
+# Auditoria e detecção contínua de desvio estrutural de schema
+flow = Step("DRIFT_DETECT PAYLOAD_SCHEMA")
+response = client.execute(flow)`
+  },
+  CHAOS: {
+    name: 'CHAOS',
+    category: 'Verbo',
+    desc: 'Injeção deliberada e controlada de falhas sintéticas (latência, exceções, interrupções) para auditoria de resiliência e caos contínuo em ambientes de testes e homologação, com salvaguarda estrita contra produção.',
+    analogy: 'Como uma simulação de incêndio programada no edifício: dispara alarmes de treino para verificar se os sistemas de emergência e rotas de fuga respondem com perfeição.',
+    preset: 'dsl-chaos',
+    dsl: `INTENT "chaos_resilience_drill" {
+  REQUIRE {
+    CHAOS NETWORK_LATENCY
+  }
+  FLOW {
+    SEQUENCE {
+      CHAOS NETWORK_LATENCY
+    }
+  }
+}`,
+    json: `{
+  "type": "STEP",
+  "capability": "CHAOS NETWORK_LATENCY",
+  "verb": "CHAOS",
+  "target": "NETWORK_LATENCY"
+}`,
+    python: `from inp_sdk import Step
+
+# Injeção controlada de falhas sintéticas e latência
+flow = Step("CHAOS NETWORK_LATENCY")
+response = client.execute(flow)`
   }
 };
 
@@ -4442,13 +5312,17 @@ function highlightCode(code, type) {
       const regex = new RegExp('\\b(' + kw + ')\\b', 'g');
       html = html.replace(regex, '<span class="hl-keyword">$1</span>');
     });
-    // Canonical & Operational Verbs
+    // Canonical & Operational Verbs (59 Verbs Highlighted)
     const verbs = [
       'CREATE', 'READ', 'UPDATE', 'DELETE', 'EXECUTE', 'PROCESS',
       'ANALYZE', 'GENERATE', 'TRANSFER', 'VALIDATE', 'AUTHENTICATE', 'AUTHORIZE',
       'NOTIFY', 'SYNC', 'ROUTE', 'COMPOSE', 'FETCH', 'STORE',
       'CALCULATE', 'REFUND', 'CANCEL', 'APPROVE', 'REJECT',
-      'CHECK', 'RESERVE', 'RELEASE', 'SEND', 'DISPATCH', 'PUBLISH', 'ARCHIVE', 'AUDIT'
+      'CHECK', 'RESERVE', 'RELEASE', 'SEND', 'DISPATCH', 'PUBLISH', 'ARCHIVE', 'AUDIT',
+      'COALESCE', 'MEMOIZE', 'GUARD', 'THROTTLE', 'BATCH', 'DEFER', 'MERGE', 'AWAIT',
+      'PROBE', 'SHADOW', 'REDACT', 'CHECKPOINT', 'SIMULATE', 'FANOUT',
+      'STREAM', 'ATTEST', 'ADAPT', 'ESCALATE', 'REASON',
+      'EMBED', 'VECTOR_SEARCH', 'SPLIT', 'ESCROW', 'POLL', 'INVALIDATE', 'DRIFT_DETECT', 'CHAOS'
     ];
     verbs.forEach(vb => {
       const regex = new RegExp('\\b(' + vb + ')\\b', 'g');
@@ -6558,6 +7432,358 @@ async function initAuthSystem() {
 
   renderCurrentProfile();
   updateNavTabsVisibility();
+  if (typeof selectLifecycleStep === 'function') {
+    selectLifecycleStep(1);
+  }
+}
+
+/**
+ * =========================================================================
+ * GUIA DO CICLO DE VIDA DA INTENÇÃO (DO ZERO AO FIM) — DADOS E CONTROLADOR
+ * =========================================================================
+ */
+const LIFECYCLE_STEPS_DATA = {
+  1: {
+    number: "01",
+    phase: "Definição do Problema & Necessidade de Negócio",
+    badge: "Fase Conceitual",
+    icon: "💡",
+    summary: "Identificação formal do objetivo de negócio, modo de execução (síncrono vs assíncrono), SLAs de latência e garantias de idempotência.",
+    responsibilities: [
+      "Determinar se o resultado precisa ser imediato (<2s) ou pode ser postergado via Transactional Outbox (queue_jobs).",
+      "Definir a chave de negócio única para o cabeçalho X-Idempotency-Key para evitar cobranças ou mutações duplicadas.",
+      "Identificar quais dados confidenciais (senhas, cartões, dados de saúde) exigem criptografia AES-256-GCM ou ZK-Proofs."
+    ],
+    codeTitle: "Checklist de Especificação Inicial",
+    codeType: "json",
+    code: `{
+  "businessGoal": "Checkout com Reserva de Estoque e Notificação",
+  "slaTargetMs": 1200,
+  "executionMode": "SYNCHRONOUS",
+  "idempotencyKeyStrategy": "order_uuid + timestamp_window",
+  "dataSensitivity": "HIGH (PCI-DSS & LGPD)",
+  "failurePolicy": "ROLLBACK"
+}`,
+    guarantees: "Garante alinhamento estrito com os requisitos de arquitetura antes de despachar qualquer recurso de infraestrutura.",
+    proTip: "Se a operação envolver envio de emails pesados ou geração de relatórios, planeje desde já o uso de DEFER para libertar o cliente em milissegundos."
+  },
+  2: {
+    number: "02",
+    phase: "Escolha Semântica dos Verbos (Catálogo de 51 Verbos)",
+    badge: "Modelagem Semântica",
+    icon: "🎯",
+    summary: "Mapeamento rigoroso das ações necessárias para os 51 verbos canónicos, estratégicos e revolucionários do protocolo INP.",
+    responsibilities: [
+      "Selecionar pares semânticos determinísticos: ex. RESERVE LOCK para travar recurso e TRANSFER FUNDS para débito.",
+      "Para cada verbo mutável de efeito colateral, definir o par compensatório (ex: RESERVE LOCK -> RELEASE LOCK).",
+      "Incorporar verbos anti-estresse se houver tráfego intenso (COALESCE, MEMOIZE, THROTTLE) ou recursos de ponta (STREAM, ATTEST, ADAPT, ESCALATE, REASON)."
+    ],
+    codeTitle: "Bloco REQUIRE na DSL",
+    codeType: "dsl",
+    code: `REQUIRE {
+  GUARD "amount > 0"
+  RESERVE STOCK
+  EXECUTE PAYMENT
+  STREAM AI_STATUS
+  ATTEST TRANSACTION_RECEIPT
+  NOTIFY CUSTOMER
+}`,
+    guarantees: "O motor valida no CapabilityRegistry se todos os requisitos possuem provedores ativos antes de autorizar o início do fluxo.",
+    proTip: "Nunca use CREATE quando a intenção real for EXECUTE ou TRANSFER; o verbo orienta as políticas de transação e auditoria do motor."
+  },
+  3: {
+    number: "03",
+    phase: "Modelagem de Dados & Invariantes (CONTEXT)",
+    badge: "Carga Útil & Estado",
+    icon: "📋",
+    summary: "Estruturação dos parâmetros de entrada, variáveis operacionais e definição da política de resiliência (failurePolicy).",
+    responsibilities: [
+      "Construir o objeto JSON estruturado com todos os argumentos requeridos pelos microsserviços da cadeia.",
+      "Definir a failurePolicy: ROLLBACK (padrão LIFO para transações financeiras) ou FORWARD_RETRY (para lotes e migrações).",
+      "Aplicar REDACT preventivo para higienização de tokens e senhas antes de logs de telemetria."
+    ],
+    codeTitle: "Bloco CONTEXT na DSL",
+    codeType: "dsl",
+    code: `CONTEXT {
+  orderId: "ord_99482",
+  amount: 450.00,
+  currency: "EUR",
+  customerId: "usr_vip_44",
+  cardToken: "tok_visa_live_883",
+  failurePolicy: "ROLLBACK"
+}`,
+    guarantees: "A imutabilidade contextual garante que cada passo recebe uma cópia higienizada e isolada do estado da transação.",
+    proTip: "Use failurePolicy: 'FORWARD_RETRY' em rotinas noturnas pesadas para que uma falha de conexão no passo 90 não desfaça os 89 passos bem-sucedidos."
+  },
+  4: {
+    number: "04",
+    phase: "Desenho da Topologia do Grafo (FLOW)",
+    badge: "Orquestração de Grafos",
+    icon: "🔀",
+    summary: "Construção do fluxo de execução combinando estruturas sequenciais, paralelas protegidas, condicionais, retries e timeouts.",
+    responsibilities: [
+      "Usar SEQUENCE para passos com dependência estrita de dados ou causalidade financeira.",
+      "Usar PARALLEL para consultas I/O simultâneas protegidas com AbortController em caso de falha concorrente.",
+      "Envolver passos de rede com RETRY (backoff exponencial) e TIMEOUT (limite de Promises Race)."
+    ],
+    codeTitle: "Bloco FLOW com Resiliência Integrada",
+    codeType: "dsl",
+    code: `FLOW {
+  SEQUENCE {
+    GUARD "amount > 0"
+    PARALLEL {
+      FETCH USER_PROFILE
+      FETCH INVENTORY_LEVEL
+    }
+    TIMEOUT 4000 {
+      RETRY 3 {
+        EXECUTE PAYMENT
+      }
+    }
+    DEFER SEND_CONFIRMATION_EMAIL
+  }
+}`,
+    guarantees: "O SafeEvaluator processa condições lógicas sem uso de eval/new Function, blindando o motor contra vulnerabilidades RCE.",
+    proTip: "Evite paralelizar passos que mutam o mesmo registro no banco para não gerar deadlocks no PostgreSQL."
+  },
+  5: {
+    number: "05",
+    phase: "Especificação do Formato de Saída (OUTPUT)",
+    badge: "Composição de Resposta",
+    icon: "📤",
+    summary: "Determinação do formato final transformado pelo ResponseComposer para entrega aos clientes e consumidores da API.",
+    responsibilities: [
+      "json: Ideal para consumo em APIs REST, Single Page Applications e microsserviços modernos.",
+      "xml: Para integração com barramentos legados, sistemas bancários SOAP ou plataformas governamentais.",
+      "text: Para terminais CLI ou saídas sintetizadas em linguagem natural.",
+      "event: Para Server-Sent Events (SSE) e canais streaming em tempo real."
+    ],
+    codeTitle: "Bloco OUTPUT na DSL",
+    codeType: "dsl",
+    code: `OUTPUT {
+  FORMAT "json"
+}`,
+    guarantees: "O ResponseComposer valida a estrutura de saída e expurga resíduos internos de depuração antes da entrega final.",
+    proTip: "Ao utilizar o verbo STREAM para streaming de IA generativa, configure sempre OUTPUT { FORMAT 'event' }."
+  },
+  6: {
+    number: "06",
+    phase: "Submissão ao Gateway HTTP / JSON Nativo / SDK",
+    badge: "Gateway & Segurança",
+    icon: "🌐",
+    summary: "Transmissão da intenção através da API REST com chave de idempotência, autenticação RBAC e proteção de rede.",
+    responsibilities: [
+      "Submeter para POST /api/intent com o cabeçalho X-Idempotency-Key obrigatório.",
+      "Informar o securityContext contendo o token de identidade e permissões do utilizador em trânsito.",
+      "A requisição pode ser submetida em DSL declarativa (text) ou em JSON estruturado nativo (intentObject)."
+    ],
+    codeTitle: "Requisição HTTP cURL",
+    codeType: "json",
+    code: `curl -X POST https://api.inpprotocol.io/api/intent \\
+  -H "Content-Type: application/json" \\
+  -H "X-Idempotency-Key: idemp_9918237192" \\
+  -d '{
+    "intentObject": {
+      "id": "intent_checkout_01",
+      "requirements": { "capabilities": ["EXECUTE PAYMENT"] },
+      "context": { "amount": 250 },
+      "flow": [{ "type": "SEQUENCE", "action": "EXECUTE PAYMENT" }],
+      "output": { "format": "json" }
+    },
+    "securityContext": { "userId": "usr_99", "permissions": ["payments.write"] }
+  }'`,
+    guarantees: "O Gateway previne ataques de replay via cache de idempotência e valida os URLs contra SSRF via NetworkSecurity.",
+    proTip: "Utilize o SDK oficial do INP para Node.js ou Python para geração automática de UUIDs e renovação transparente de tokens."
+  },
+  7: {
+    number: "07",
+    phase: "Parsing, AST Cache & Validação Sintática",
+    badge: "Compilador do Motor",
+    icon: "⚙️",
+    summary: "O IntentParser analisa a sintaxe formal da DSL, gera a AST em memória e a armazena no IntentPlanCache.",
+    responsibilities: [
+      "Verificar a conformidade da gramática da DSL ou validar a estrutura do objeto JSON nativo recebido.",
+      "Consultar o IntentPlanCache: se a assinatura da intenção já foi compilada, a AST é devolvida instantaneamente (<0.1ms).",
+      "Se for uma requisição inédita, o compilador processa a árvore sintática e alimenta a cache LRU com o novo plano."
+    ],
+    codeTitle: "Estrutura da AST Compilada",
+    codeType: "json",
+    code: `{
+  "id": "intent_checkout_01",
+  "name": "checkout_order",
+  "requirements": { "capabilities": ["EXECUTE PAYMENT", "NOTIFY CLIENT"] },
+  "flow": [
+    { "type": "SEQUENCE", "action": "EXECUTE PAYMENT" },
+    { "type": "SEQUENCE", "action": "NOTIFY CLIENT" }
+  ],
+  "context": { "amount": 250 },
+  "output": { "format": "json" }
+}`,
+    guarantees: "Aceleração drástica de performance com zero alocações repetitivas de memória em requisições de alta frequência.",
+    proTip: "Mantenha a nomenclatura das intenções padronizada para maximizar a taxa de acertos (cache hit ratio) no IntentPlanCache."
+  },
+  8: {
+    number: "08",
+    phase: "Matching Semântico & Dynamic Health Scoring",
+    badge: "Resolução Inteligente",
+    icon: "🔍",
+    summary: "O MatchingEngine resolve cada requisito no CapabilityRegistry, ordenando candidatos com algoritmos preditivos de saúde.",
+    responsibilities: [
+      "Localizar todos os serviços aptos cadastrados no PostgreSQL ou em memória volátil.",
+      "Calcular a pontuação combinando trustScore base, nível de segurança (HIGH ganha +10%) e bónus de correspondência exata (+0.5).",
+      "Aplicar o multiplicador de saúde dinâmico do ServiceMetricsCollector (penaliza nós com latência >1s ou taxa de erros elevada).",
+      "Quando o verbo ADAPT for especificado, aplica o algoritmo Multi-Armed Bandit (epsilon-greedy) para exploração/explotação ótima."
+    ],
+    codeTitle: "Algoritmo Ponderado de Correspondência",
+    codeType: "json",
+    code: `{
+  "requirement": "EXECUTE PAYMENT",
+  "topMatchedService": {
+    "serviceId": "payments-cluster-node-3",
+    "trustScore": 80,
+    "securityLevel": "HIGH",
+    "realtimeLatencyMs": 42,
+    "healthMultiplier": 1.0,
+    "finalScore": 1.43
+  },
+  "failoverCandidates": ["payments-cluster-node-1", "payments-cluster-node-2"]
+}`,
+    guarantees: "Isola automaticamente microsserviços lentos ou degradados sem necessidade de intervenção humana.",
+    proTip: "Monitore a aba de Métricas do Portal para identificar nós que estão sofrendo penalização contínua de tráfego."
+  },
+  9: {
+    number: "09",
+    phase: "Execução no Motor com Resiliência Extrema",
+    badge: "Núcleo de Execução",
+    icon: "⚡",
+    summary: "O ExecutionEngine orquestra os nós com Circuit Breakers por serviço, Single-Flight e validação AJV pré e pós-passo.",
+    responsibilities: [
+      "Injetar HTTP Keep-Alive persistente através dos pools httpAgent e httpsAgent configurados.",
+      "Consultar o CircuitBreakerRegistry singleton do nó: se o circuito estiver OPEN, dispara failover imediato para o próximo nó.",
+      "Validar o contrato inputSchema do microsserviço com SchemaCache pré-compilado; se violado, solicita autocura com AISelfHealer.",
+      "Validar o contrato outputSchema após o retorno para impedir a propagação de payloads corrompidos no grafo."
+    ],
+    codeTitle: "Proteção com Circuit Breaker & Validação",
+    codeType: "json",
+    code: `{
+  "circuitBreaker": "CLOSED (Error rate: 0.0%)",
+  "inputSchemaValidation": "PASSED (Cached AJV)",
+  "httpConnection": "KEEP_ALIVE (Reused Socket)",
+  "outputSchemaValidation": "PASSED",
+  "executionDurationMs": 38
+}`,
+    guarantees: "Total isolamento de falhas. Uma queda temporária de um nó não contamina nem interrompe o motor de orquestração.",
+    proTip: "Defina esquemas AJV claros para inputSchema e outputSchema; eles habilitam a autocura automática por IA caso campos venham truncados."
+  },
+  10: {
+    number: "10",
+    phase: "Saga Rollback ou Sucesso & Telemetria em Tempo Real",
+    badge: "Transacionalidade & Conclusão",
+    icon: "🛡️",
+    summary: "Conclusão com sucesso ou acionamento atómico da compensação Saga LIFO, com gravação em base de dados e telemetria SSE.",
+    responsibilities: [
+      "Persistir o estado final da Saga (COMPLETED, FAILED ou SUSPENDED) na tabela saga_states.",
+      "Em caso de erro irrecuperável, desempilhar as ações de compensação na ordem inversa (LIFO) garantindo consistência eventual.",
+      "Transmitir eventos em tempo real via TelemetryService (SSE/WebSocket) para consolas de auditoria e clientes conectados.",
+      "Emitir prova forense auditável com selo criptográfico HMAC-SHA256 se o verbo ATTEST foi invocado."
+    ],
+    codeTitle: "Registro de Auditoria & Prova Forense",
+    codeType: "json",
+    code: `{
+  "executionId": "e3a89012-44df-41a9-9801-789a012bc456",
+  "status": "COMPLETED",
+  "durationMs": 142,
+  "stepsExecuted": 6,
+  "sagaCompensationStack": [],
+  "attestationSeal": {
+    "algorithm": "HMAC-SHA256",
+    "timestamp": 1726450800000,
+    "proofHash": "8f3b20c9e2b10a45d048991a03eef5868c2e17..."
+  }
+}`,
+    guarantees: "Zero inconsistências em bancos distribuídos e trilha forense completa para conformidade regulatória (SOC2 / LGPD).",
+    proTip: "Use o endpoint POST /api/workflow/:sagaId/approve para aprovar ou rejeitar manualmente fluxos suspensos por ESCALATE."
+  }
+};
+
+/**
+ * @description Atualiza a interface visual do Ciclo de Vida da Intenção ao clicar em qualquer um dos 10 passos.
+ * @param {number} stepNumber - Número da etapa (1 a 10).
+ */
+function selectLifecycleStep(stepNumber) {
+  const data = LIFECYCLE_STEPS_DATA[stepNumber];
+  if (!data) return;
+
+  // Atualizar botões visuais do stepper
+  document.querySelectorAll('.lifecycle-step-card').forEach(card => {
+    const cardStep = parseInt(card.getAttribute('data-step'), 10);
+    if (cardStep === stepNumber) {
+      card.classList.add('active');
+      card.style.borderColor = 'var(--secondary)';
+      card.style.background = 'rgba(0, 245, 255, 0.08)';
+      card.style.boxShadow = '0 0 15px rgba(0, 245, 255, 0.15)';
+    } else {
+      card.classList.remove('active');
+      card.style.borderColor = 'var(--card-border)';
+      card.style.background = 'rgba(255, 255, 255, 0.01)';
+      card.style.boxShadow = 'none';
+    }
+  });
+
+  // Atualizar painel de detalhes dinâmico
+  const panel = document.getElementById('lifecycle-detail-panel');
+  if (!panel) return;
+
+  panel.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 15px; margin-bottom: 20px; border-bottom: 1px solid var(--card-border); padding-bottom: 18px;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-size: 32px; padding: 10px 14px; background: rgba(0, 245, 255, 0.1); border-radius: 12px; border: 1px solid rgba(0, 245, 255, 0.25); color: var(--secondary);">${data.icon}</div>
+        <div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 12px; font-weight: 800; color: var(--secondary); letter-spacing: 1.5px; text-transform: uppercase;">MARCO ${data.number}</span>
+            <span class="pill-live-badge" style="background: rgba(162, 89, 255, 0.15); color: #c084fc; border: 1px solid rgba(162, 89, 255, 0.3); font-size: 11px; padding: 2px 10px; border-radius: 12px;">${data.badge}</span>
+          </div>
+          <h3 style="font-size: 20px; font-weight: 800; color: var(--text); margin-top: 4px;">${data.phase}</h3>
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button class="btn btn-outline" style="font-size: 11px; padding: 6px 14px;" onclick="selectLifecycleStep(${stepNumber > 1 ? stepNumber - 1 : 10})">← Anterior</button>
+        <button class="btn btn-primary" style="font-size: 11px; padding: 6px 14px;" onclick="selectLifecycleStep(${stepNumber < 10 ? stepNumber + 1 : 1})">Próximo →</button>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 24px; align-items: start;">
+      <div>
+        <h4 style="font-size: 13.5px; font-weight: 700; color: var(--secondary); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Resumo Arquitetural</h4>
+        <p style="font-size: 14px; color: #e2e8f0; line-height: 1.6; margin-bottom: 20px;">${data.summary}</p>
+
+        <h4 style="font-size: 13.5px; font-weight: 700; color: var(--text); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px;">Responsabilidades &amp; Ações Desta Fase:</h4>
+        <ul style="padding-left: 18px; margin-bottom: 20px; color: var(--text-muted); font-size: 13.5px; line-height: 1.7;">
+          ${data.responsibilities.map(r => `<li style="margin-bottom: 6px;">${r}</li>`).join('')}
+        </ul>
+
+        <div style="padding: 14px; background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 10px; margin-bottom: 12px;">
+          <div style="font-size: 12px; font-weight: 700; color: #10b981; margin-bottom: 4px;">🛡️ Garantias do Motor:</div>
+          <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">${data.guarantees}</div>
+        </div>
+
+        <div style="padding: 14px; background: rgba(255, 183, 3, 0.05); border: 1px solid rgba(255, 183, 3, 0.2); border-radius: 10px;">
+          <div style="font-size: 12px; font-weight: 700; color: #fbbf24; margin-bottom: 4px;">💡 Dica de Ouro de Engenharia:</div>
+          <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">${data.proTip}</div>
+        </div>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">${data.codeTitle}</span>
+          <span style="font-size: 11px; color: var(--secondary); font-family: monospace;">${data.codeType.toUpperCase()}</span>
+        </div>
+        <div class="editor-wrapper">
+          <pre style="background: #020106; border: 1px solid var(--card-border); border-radius: 8px; padding: 16px; font-family: 'Fira Code', monospace; font-size: 12px; color: #e2e8f0; max-height: 380px; overflow-y: auto; line-height: 1.6; margin: 0;"><code>${typeof highlightCode === 'function' ? highlightCode(data.code, data.codeType) : data.code}</code></pre>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 if (document.readyState === 'loading') {

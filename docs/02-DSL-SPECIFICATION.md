@@ -57,10 +57,15 @@ Define os parâmetros de entrada e variáveis de estado da intenção. Os tipos 
 - `failurePolicy: "FORWARD_RETRY"`: Salva o estado e reinicia a partir do ponto de falha sem desfazer etapas prévias bem-sucedidas.
 
 ### C. `REQUIRE { ... }`
-Declara a lista de capacidades indispensáveis para que a intenção possa ser aceita para execução. Cada linha define um par `VERBO ALVO`.
-- **Verbos Canônicos**: `CREATE`, `READ`, `UPDATE`, `DELETE`, `EXECUTE`, `PROCESS`, `ANALYZE`, `GENERATE`, `TRANSFER`, `VALIDATE`, `AUTHENTICATE`, `AUTHORIZE`, `NOTIFY`, `SYNC`, `ROUTE`, `COMPOSE`, `FETCH`, `STORE`, `CALCULATE`, `REFUND`, `CANCEL`, `APPROVE`, `REJECT`.
-- **Verbos Operacionais & Transacionais**: `CHECK`, `RESERVE`, `RELEASE`, `SEND`, `DISPATCH`, `PUBLISH`, `ARCHIVE`, `AUDIT`.
-- *(Consulte a [Seção 5](#5-catálogo-canônico-de-verbos-de-intenção-semântica-finalidade-e-guia-de-decisão) para a definição minuciosa, regras de quando usar e compensações Saga de cada verbo).*
+Declara a lista de capacidades indispensáveis para que a intenção possa ser aceita para execução. Cada linha define um par `VERBO ALVO`. O motor suporta **120 verbos operacionais oficiais** divididos em 7 famílias:
+- **32 Canônicos Operacionais**: `FETCH`, `QUERY`, `RESOLVE`, `READ`, `RETRIEVE`, `STREAM_READ`, `STORE`, `MUTATE`, `CREATE`, `UPDATE`, `DELETE`, `UPSERT`, `PATCH`, `EXECUTE`, `PROCESS`, `CALCULATE`, `TRANSFER`, `REFUND`, `CANCEL`, `APPROVE`, `REJECT`, `CHECK`, `RESERVE`, `RELEASE`, `SEND`, `DISPATCH`, `PUBLISH`, `ARCHIVE`, `AUDIT`, `VALIDATE`, `AUTHENTICATE`, `AUTHORIZE`.
+- **24 Anti-Estresse & Alta Resiliência**: `COALESCE`, `MEMOIZE`, `CIRCUIT_BREAKER`, `RATE_LIMIT`, `GUARD`, `THROTTLE`, `BATCH`, `DEBOUNCE`, `RETRY`, `RETRY_BACKOFF`, `PRIORITY_QUEUE`, `SHARD`, `SHED_LOAD`, `COMPRESS`, `FALLBACK`, `DEFER`, `MERGE`, `AWAIT`, `PROBE`, `SHADOW`, `REDACT`, `CHECKPOINT`, `SIMULATE`, `FANOUT`.
+- **6 Killer Features Revolucionárias**: `STREAM`, `ATTEST`, `ADAPT`, `ESCALATE`, `REASON`, `CONSENSUS`.
+- **9 Criptografia, Mensageria & Concorrência**: `ENCRYPT`, `DECRYPT`, `SIGN`, `VERIFY`, `LOCK`, `UNLOCK`, `ACQUIRE`, `HEALTH_CHECK`, `NOTIFY`.
+- **18 Funcionais, Eventos & Governança**: `FILTER`, `MAP`, `REDUCE`, `AGGREGATE`, `ENRICH`, `ASSERT`, `SANITIZE`, `ENFORCE_SCHEMA`, `CHECK_POLICY`, `LOOP`, `BRANCH`, `TRANSFORM`, `NOTIFY_SUBSCRIBERS`, `ROUTE`, `COMPOSE`, `ANALYZE`, `GENERATE`, `SYNC`.
+- **16 Anti-Headache & DevOps Resiliente**: `DEDUPLICATE`, `REDRIVE`, `CANARY`, `DIFF`, `CORRELATE`, `ISOLATE`, `ANONYMIZE`, `DRAIN`, `QUARANTINE`, `LEASE`, `BACKPRESSURE`, `MIGRATE`, `SAMPLE`, `RECONCILE`, `CHALLENGE`, `MUTEX`.
+- **15 Interconexão entre Sistemas & Ergonomia**: `BRIDGE`, `OUTBOUND`, `INGEST`, `FANIN`, `EMIT`, `PLUCK`, `FLATTEN`, `MASK`, `CAST`, `CLAMP`, `COOLDOWN`, `UNDO`, `SNAPSHOT`, `DIVERGE`, `HEARTBEAT`.
+- *(Consulte a [Seção 5](#5-catálogo-canônico-de-verbos-de-intenção-semântica-finalidade-e-guia-de-decisão) para a matriz detalhada, regras de idempotência e compensação Saga).*
 - Exemplo:
   ```text
   REQUIRE {
@@ -243,11 +248,17 @@ INTENT "enterprise_order_fulfillment" {
 
 No **Intent Network Protocol (INP)**, os **Verbos de Intenção** constituem os blocos atômicos da semântica operacional da rede. Enquanto o **Alvo (Target)** identifica o recurso ou domínio sobre o qual a ação incide (ex.: `PAYMENT`, `INVENTORY`, `USER`, `REPORT`), o **Verbo** define a natureza fundamental, a política de idempotência, o impacto no estado e o comportamento transacional/Saga da operação.
 
-Esta seção detalha os **23 verbos canônicos originais** e os **8 verbos operacionais e transacionais complementares**, fornecendo diretrizes precisas sobre **para que servem**, **quando usar** e **quando NÃO usar**, além de exemplos práticos de sintaxe DSL e contratos.
+Esta seção detalha os **105 verbos oficiais do INP Protocol v2.7**, organizados em **6 famílias estratégicas**:
+1. **32 Verbos Canónicos Operacionais** (Fundamentos de Negócio e Estado)
+2. **24 Verbos Estratégicos Anti-Estresse e Alta Resiliência** (Armadura de Sobrevivência)
+3. **6 Killer Features Revolucionárias** (Streaming, Prova Forense, IA Agêntica, HITL & Consenso)
+4. **9 Verbos Criptográficos, Mensageria e Concorrência Distribuída** (Barramento e Travas)
+5. **18 Verbos Funcionais, Eventos e Governança de Dados** (Pipelines e Filtragens)
+6. **16 Verbos Anti-Headache & DevOps Resiliente** (Solução de Dores Críticas de Infraestrutura)
 
 ---
 
-### Tabela Comparativa Rápida (Matriz de Decisão)
+### Tabela Comparativa Consolidada dos 105 Verbos Operacionais
 
 | Verbo | Categoria | Natureza / Efeito | Idempotente? | Compensação Saga Típica | Quando Usar (Resumo) |
 |---|---|---|---|---|---|
@@ -282,6 +293,95 @@ Esta seção detalha os **23 verbos canônicos originais** e os **8 verbos opera
 | **PUBLISH** | Event-Driven | Emissão em barramento | Sim | Compensating Event | Publicar eventos em Kafka, RabbitMQ ou barramentos pub/sub. |
 | **ARCHIVE** | Retenção / Legal | Armazenamento frio | Sim | `RESTORE` | Mover histórico de transações e auditoria para guarda legal. |
 | **AUDIT** | Segurança / Forense | Verificação de conformidade | Sim | Nenhuma | Validar logs contra adulteração e auditar trilha transacional. |
+| **COALESCE** | Anti-Stress / Single-Flight | Colapso de concorrência | Sim | Nenhuma | Deduplicar requisições em voo mitigando thundering herd. |
+| **MEMOIZE** | Anti-Stress / Cache | Cache-aside volátil | Sim | Nenhuma | Memorizar cálculos/consultas com hashing SHA-256 e TTL. |
+| **GUARD** | Resiliência / Fail-Fast | Invariante em memória | Sim | Nenhuma | Barrar fluxos inválidos antes de consumir rede ou banco. |
+| **THROTTLE** | Anti-Stress / Vazão | Token bucket pacing | Sim | Nenhuma | Modular a cadência de requisições por segundo para APIs frágeis. |
+| **BATCH** | Anti-Stress / Lotes | Chunking declarativo | Sim | Nenhuma | Fracionar coleções grandes em pedaços seguros, sem sobrecarga N+1. |
+| **DEFER** | Anti-Stress / Async | Transactional Outbox | Sim | Nenhuma | Agendar tarefas assíncronas no PostgreSQL liberando o cliente. |
+| **MERGE** | Ergonomia / Composição | Fusão profunda | Sim | Nenhuma | Consolidar saídas parciais em um payload coerente unificado. |
+| **AWAIT** | Ergonomia / Saga | Suspensão reativa | Sim | Nenhuma | Pausar a Saga liberando threads até retoma externa por webhook. |
+| **PROBE** | Telemetria / Métricas | Zero-IO health check | Sim | Nenhuma | Inspecionar status em memória (<1ms) via ServiceMetricsCollector. |
+| **SHADOW** | Resiliência / Canary | Tráfego espelho | Sim | Nenhuma | Disparar carga sombra em background sem impactar latência. |
+| **REDACT** | Segurança / LGPD | Sanitização de dados | Sim | Nenhuma | Mascarar senhas, cartões e tokens com tarjas irreversíveis. |
+| **CHECKPOINT** | Resiliência / Saga | Savepoint intermediário | Sim | Nenhuma | Gravar marco de execução no banco para recuperação cirúrgica. |
+| **SIMULATE** | Resiliência / Chaos | Injeção de latência/mock | Sim | Nenhuma | Simular falhas programadas para testes de carga e resiliência. |
+| **FANOUT** | Ergonomia / Paralelismo | Bounded concurrency | Sim | Nenhuma | Dispersar trabalho com limite estrito de concorrência e heap. |
+| **STREAM** | Real-Time / Streaming | Emissão progressiva | Sim | Nenhuma | Transmitir deltas em tempo real via SSE para UIs e IA generativa. |
+| **ATTEST** | Criptografia / Forense | Prova forense HMAC | Sim | Nenhuma | Selar estado de execução com HMAC-SHA256 para SOC2/LGPD. |
+| **ADAPT** | IA / Roteamento | Multi-Armed Bandit | Sim | Nenhuma | Roteamento adaptativo (epsilon-greedy) que desvia de nós lentos. |
+| **ESCALATE** | Governança / HITL | Suspensão com SLA | Sim | Nenhuma | Suspender fluxos atípicos para aprovação humana supervisionada. |
+| **REASON** | Orquestração Agêntica | Deliberação CoT | Sim | Nenhuma | Deliberação reflexiva estruturada com justificativa formal auditável. |
+| **DEDUPLICATE** | Anti-Headache / Resiliência | Filtro deslizante SHA-256 | Sim | Nenhuma | Eliminar webhooks redundantes e mensagens repetidas de fila (<0.05ms). |
+| **REDRIVE** | Anti-Headache / Fila | Reprocessamento de DLQ | Sim | Nenhuma | Reprocessar mensagens falhadas da DLQ de volta à fila primária com dry-run. |
+| **CANARY** | Anti-Headache / Deploy | Roteamento ponderado | Sim | Nenhuma | Direcionar fração percentual de tráfego (ex: 15%) para nova versão com fallback. |
+| **DIFF** | Anti-Headache / Auditoria | Comparação profunda recursiva | Sim | Nenhuma | Isolar deltas estruturais exatos (adicionados, modificados, removidos) em memória. |
+| **CORRELATE** | Anti-Headache / Rastreio | Injeção W3C TraceContext | Sim | Nenhuma | Amarrar requisições sob traceId, spanId e correlationId universal. |
+| **ISOLATE** | Anti-Headache / Multi-Tenant | Segregação corporativa | Sim | Nenhuma | Impedir vazamento de dados ou comandos entre empresas distintas. |
+| **ANONYMIZE** | Anti-Headache / LGPD | Hashing salgado de PII | Sim | Nenhuma | Mascarar CPFs, e-mails e nomes irreversivelmente antes de telemetria/analytics. |
+| **DRAIN** | Anti-Headache / DevOps | Graceful shutdown | Sim | Nenhuma | Encerrar nó sem derrubar conexões ativas no Kubernetes/deploys. |
+| **QUARANTINE** | Anti-Headache / Resiliência | Isolamento de Poison Pills | Sim | Nenhuma | Enviar payloads malformados para cofre forense sem travar a fila de consumo. |
+| **LEASE** | Anti-Headache / Concorrência | Bloqueio com heartbeat ativo | Sim | `RELEASE` | Obter posse exclusiva de tarefas/cron jobs com renovação periódica. |
+| **BACKPRESSURE** | Anti-Headache / Fluxo | Controle reativo de vazão | Sim | Nenhuma | Frear produtores velozes quando a fila atingir mais de 80% da capacidade. |
+| **MIGRATE** | Anti-Headache / Adaptação | Mapeamento on-the-fly | Sim | Nenhuma | Converter payloads de versões antigas (v1) para a versão moderna (v2) sem quebra. |
+| **SAMPLE** | Anti-Headache / Custos | Filtragem adaptativa de logs | Sim | Nenhuma | Reter 100% dos erros e apenas 5% dos sucessos para cortar 90% dos custos de APM. |
+| **RECONCILE** | Anti-Headache / Financeiro | Batimento O(n) | Sim | Nenhuma | Conciliar livros-razão, extratos bancários e estoques com alta performance. |
+| **CHALLENGE** | Anti-Headache / Segurança | Desafio Step-Up MFA | Sim | Nenhuma | Exigir autenticação biométrica ou push token em transações financeiras anômalas. |
+| **MUTEX** | Anti-Headache / Concorrência | Exclusão mútua local estrita | Sim | `UNLOCK` | Proteger seções críticas e números sequenciais fiscais contra race conditions. |
+| **QUERY** | CRUD / Consulta | Filtro paginado | Sim | Nenhuma | Consultas filtradas e paginadas com limite obrigatório. |
+| **RESOLVE** | Descoberta / Rede | Descoberta semântica | Sim | Nenhuma | Mapear nomes de microsserviços em URLs físicas no cluster. |
+| **RETRIEVE** | Consulta / Grafo | Expansão recursiva | Sim | Nenhuma | Carregar entidade pai com coleções agregadas (eager loading). |
+| **STREAM_READ** | I/O / Big Data | Consumo em blocos | Sim | Nenhuma | Ler arquivos sequenciais gigantescos sem estourar a memória RAM. |
+| **MUTATE** | Transacional / Saga | Alteração com compensação | Não (sem chave) | Cláusula `COMPENSATE` | Alterar estado de negócio garantindo rollback automático LIFO. |
+| **UPSERT** | CRUD / Concorrência | Fusão atômica | Sim | `DELETE` / `UPDATE` | Inserir novo se ausente ou atualizar se existente. |
+| **PATCH** | CRUD / Parcial | Modificação cirúrgica | Sim | `PATCH` (Inverso) | Atualizar apenas campos específicos sem trafegar a entidade inteira. |
+| **CIRCUIT_BREAKER** | Resiliência / Falhas | Disjuntor de circuito | Sim | Nenhuma | Interromper tráfego para nós instáveis evitando retenção de conexões. |
+| **RATE_LIMIT** | Resiliência / Vazão | Token Bucket | Sim | Nenhuma | Limitar requisições por IP, usuário ou janela temporal contra abusos. |
+| **DEBOUNCE** | Resiliência / Eventos | Atraso estabilizador | Sim | Nenhuma | Aguardar quietude de eventos antes de disparar ação final. |
+| **RETRY** | Resiliência / Falhas | Retentativa configurável | Sim | Nenhuma | Reexecutar passos transitórios com recuo exponencial e jitter. |
+| **RETRY_BACKOFF** | Resiliência / Falhas | Retentativa com recuo | Sim | Nenhuma | Reexecutar requisições com atraso crescente contra serviços parceiros. |
+| **PRIORITY_QUEUE** | Resiliência / Fila | Fila ponderada | Sim | Nenhuma | Ordenar tarefas por classe de serviço (VIP, normal, background). |
+| **SHARD** | Resiliência / Partição | Hash partitioning | Sim | Nenhuma | Distribuir carga entre múltiplas partições por chave semântica. |
+| **SHED_LOAD** | Resiliência / Sobrevivência | Descarte adaptativo | Sim | Nenhuma | Rejeitar trabalho secundário sob sobrecarga térmica/CPU do servidor. |
+| **COMPRESS** | Otimização / I/O | Compressão GZIP/Brotli | Sim | Nenhuma | Reduzir volume de tráfego de payloads volumosos na rede. |
+| **FALLBACK** | Resiliência / Contingência | Rota alternativa | Sim | Nenhuma | Executar caminho de contingência se o caminho primário falhar. |
+| **CONSENSUS** | Consenso / Quórum | Votação distribuída | Sim | Nenhuma | Exigir concordância de maioria (quórum) de nós antes de aprovar decisão. |
+| **ENCRYPT** | Criptografia / Proteção | Cifragem AES-GCM | Sim | Nenhuma | Cifrar dados sensíveis com chave simétrica antes de armazenar. |
+| **DECRYPT** | Criptografia / Acesso | Decifragem AES-GCM | Sim | Nenhuma | Recuperar texto em claro a partir de payload criptografado. |
+| **SIGN** | Criptografia / Autoria | Assinatura digital | Sim | Nenhuma | Assinar documento com chave privada garantindo não-repúdio. |
+| **VERIFY** | Criptografia / Integridade | Validação de assinatura | Sim | Nenhuma | Checar se assinatura digital confere com chave pública do emissor. |
+| **LOCK** | Concorrência / Exclusão | Trinco distribuído | Sim | `UNLOCK` | Adquirir exclusividade de recurso por chave em cluster. |
+| **UNLOCK** | Concorrência / Liberação | Liberação de trinco | Sim | Nenhuma | Liberar recurso previamente travado para os demais nós. |
+| **ACQUIRE** | Concorrência / Semáforo | Permissão de vazão | Sim | `RELEASE` | Obter ficha em semáforo contador de acessos concorrentes. |
+| **HEALTH_CHECK** | Telemetria / Diagnóstico | Sondagem de saúde | Sim | Nenhuma | Inspecionar status operacional de serviços e bancos de dados. |
+| **FILTER** | Funcional / Coleção | Predicado lógico | Sim | Nenhuma | Filtrar itens de listas mantendo apenas os que satisfazem condição. |
+| **MAP** | Funcional / Transformação | Projeção elemento a elemento | Sim | Nenhuma | Projetar atributos específicos de cada elemento de uma lista. |
+| **REDUCE** | Funcional / Agregação | Acumulador escalar | Sim | Nenhuma | Somar ou acumular valores de uma lista em um único resultado. |
+| **AGGREGATE** | Funcional / Estatística | Agrupamento dimensional | Sim | Nenhuma | Calcular soma, média e contagem agrupadas por dimensão de negócio. |
+| **ENRICH** | Funcional / Fusão | Acoplamento de dados | Sim | Nenhuma | Anexar informações complementares a uma entidade base. |
+| **ASSERT** | Integridade / Regras | Invariante de negócio | Sim | Nenhuma | Abortar execução imediatamente se predicado for violado. |
+| **SANITIZE** | Segurança / Limpeza | Higienização de strings | Sim | Nenhuma | Remover tags HTML, scripts e caracteres perigosos contra XSS. |
+| **ENFORCE_SCHEMA** | Segurança / Contrato | Coerção e descarte estrito | Sim | Nenhuma | Expurgar campos desconhecidos protegendo contra injeção de parâmetros. |
+| **CHECK_POLICY** | Governança / OPA | Regras declarativas | Sim | Nenhuma | Avaliar conformidade corporativa contra políticas OPA/Rego. |
+| **LOOP** | Fluxo / Iteração | Laço com limite rígido | Sim | Nenhuma | Iterar sobre coleções garantindo proteção contra loops infinitos. |
+| **BRANCH** | Fluxo / Decisão | Roteamento multi-caminho | Sim | Nenhuma | Bifurcar fluxo por chave categórica eliminando IFs aninhados. |
+| **TRANSFORM** | Funcional / Schema | Mapeamento declarativo | Sim | Nenhuma | Mapear propriedades de entrada para nomes aceitos no destino. |
+| **NOTIFY_SUBSCRIBERS** | Event-Driven / PubSub | Disparo em leque | Sim | Nenhuma | Notificar lista de assinantes registrados em um canal. |
+| **BRIDGE** | Interoperabilidade / Protocolos | Adaptador universal | Sim | Nenhuma | Conversão e mapeamento de formatos (SOAP <-> REST, XML <-> JSON). |
+| **OUTBOUND** | Interoperabilidade / HTTP | Disparo resiliente | Sim | Nenhuma | Chamada HTTP/REST com retry, backoff e timeout embutidos. |
+| **INGEST** | Interoperabilidade / Webhooks | Ingestão e assinatura | Sim | Nenhuma | Receber webhooks com checagem de assinatura HMAC segura. |
+| **FANIN** | Interoperabilidade / Async | Agregação convergente | Sim | Nenhuma | Junção de respostas concorrentes com quórum mínimo. |
+| **EMIT** | Event-Driven / PubSub | Emissão assíncrona leve | Sim | Nenhuma | Publicação fire-and-forget de eventos sem bloqueio de threads. |
+| **PLUCK** | Funcional / Ergonomia | Extração cirúrgica | Sim | Nenhuma | Extrair campos específicos de listas ou objetos sem loops. |
+| **FLATTEN** | Funcional / Ergonomia | Aplainamento de listas | Sim | Nenhuma | Aplainar matrizes multidimensionais aninhadas em lista plana. |
+| **MASK** | Segurança / Exibição | Mascaramento visual | Sim | Nenhuma | Mascaramento de dados sensíveis (cartão, CPF, e-mail). |
+| **CAST** | Tipagem / Ergonomia | Coerção segura de tipos | Sim | Nenhuma | Conversão segura de tipos primitivos com fallback sem exceções. |
+| **CLAMP** | Validação / Numérico | Delimitação de intervalo | Sim | Nenhuma | Travar números dentro de intervalo fixo [min, max]. |
+| **COOLDOWN** | Controle / Temporização | Pausa cooperativa | Sim | Nenhuma | Pausa não-bloqueante na esteira com suporte a cancelamento. |
+| **UNDO** | Resiliência / Reversão | Desfazer atômico pontual | Não | Nenhuma | Reverter cirurgicamente o passo anterior sem Saga inteira. |
+| **SNAPSHOT** | Forense / Auditoria | Foto de estado em memória | Sim | Nenhuma | Captura fotográfica com hash SHA-256 para auditoria ou replay. |
+| **DIVERGE** | Concorrência / Async | Bifurcação em background | Sim | Nenhuma | Disparar rotina assíncrona secundária em background. |
+| **HEARTBEAT** | Telemetria / SLA | Sinal de vivacidade | Sim | Nenhuma | Emitir pulsos periódicos de vivacidade prevenindo falsos timeouts. |
 
 ---
 
@@ -810,30 +910,275 @@ Esta seção detalha os **23 verbos canônicos originais** e os **8 verbos opera
 
 ---
 
-### Guia Rápido: Como Escolher o Verbo Correto?
+### Detalhamento dos 14 Verbos Estratégicos & Anti-Estresse (v2.6)
+
+#### 32. `COALESCE`
+- **Definição Semântica**: Implementa o padrão *Single-Flight*: colapsa requisições concorrentes idênticas em voo numa única chamada real ao microsserviço, partilhando o mesmo resultado com todas as requisições aguardando.
+- **Para que serve**: Eliminar o efeito *Thundering Herd* perante expiração de cache ou picos de tráfego instantâneo sobre relatórios ou métricas pesadas.
+- **Quando usar**: Em endpoints de leitura intensiva onde centenas de clientes solicitam o mesmo dado simultaneamente.
+- **Quando NÃO usar**: Em operações com mutações ou efeitos colaterais de negócio únicos por utilizador (ex: pagamentos).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    COALESCE METRICS_SNAPSHOT
+  }
+  ```
+
+#### 33. `MEMOIZE`
+- **Definição Semântica**: Realiza cache-aside transparente em memória com geração de chave criptográfica SHA-256 e TTL (tempo de vida) estritamente delimitado.
+- **Para que serve**: Armazenar resultados de cálculos matemáticos pesados ou consultas idempotentes repetitivas sem tráfego de rede desnecessário.
+- **Quando usar**: Tabelas de frete, alíquotas fiscais, catálogos de produtos e dados que mudam com baixa frequência.
+- **Quando NÃO usar**: Dados em tempo real voláteis que requerem consistência estrita imediata.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    MEMOIZE TAX_CALCULATION
+  }
+  ```
+
+#### 34. `GUARD`
+- **Definição Semântica**: Barreira defensiva *fail-fast* que avalia invariantes críticas e regras de validação em memória antes de consumir qualquer recurso de rede.
+- **Para que serve**: Abortar instantaneamente requisições com dados absurdos (ex.: `amount <= 0`) sem onerar microsserviços nem gastar conexões no pool.
+- **Quando usar**: No início de qualquer sequência de transações como pré-condição obrigatória.
+- **Quando NÃO usar**: Quando a validação depender de consultas dinâmicas em bancos de dados remotos.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    GUARD "amount > 0"
+  }
+  ```
+
+#### 35. `THROTTLE`
+- **Definição Semântica**: Modula e cadencia a taxa de requisições por segundo através do algoritmo *Token Bucket*, enfileirando ou contendo picos de estresse.
+- **Para que serve**: Proteger microsserviços legados ou respeitar cotas estritas de rate limiting de APIs externas parceiras.
+- **Quando usar**: Comunicação com provedores de terceiros (ex: bureaus de crédito, APIs de mensageria).
+- **Quando NÃO usar**: Em rotinas internas de baixíssima latência que não possuem limites de taxa.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    THROTTLE LEGACY_CRM
+  }
+  ```
+
+#### 36. `BATCH`
+- **Definição Semântica**: Fraciona coleções volumosas em lotes (*chunks*) seguros pré-dimensionados, eliminando a sobrecarga de memória e o problema N+1.
+- **Para que serve**: Processar milhares de pedidos, pagamentos em lote ou sincronizações de inventário em fatias seguras de 50 ou 100 itens.
+- **Quando usar**: Sempre que a carga útil de entrada for uma lista de entidades arbitrária.
+- **Quando NÃO usar**: Operações atômicas de registro único.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    BATCH CHUNK_ORDERS
+  }
+  ```
+
+#### 37. `DEFER`
+- **Definição Semântica**: Padrão *Transactional Outbox*: desacopla tarefas secundárias da resposta síncrona do motor, persistindo a intenção na tabela `queue_jobs`.
+- **Para que serve**: Enviar notificações por email, gerar relatórios em PDF ou despachar analíticos em segundo plano liberando a API imediatamente.
+- **Quando usar**: Passos não-bloqueantes onde o cliente não precisa aguardar o retorno para continuar sua navegação.
+- **Quando NÃO usar**: Etapas transacionais que definem o sucesso da operação (ex.: débito bancário).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    DEFER EMAIL_NOTIFICATION
+  }
+  ```
+
+#### 38. `MERGE`
+- **Definição Semântica**: Fusão profunda declarativa que combina múltiplos fragmentos ou saídas parciais de passos prévios num único objeto coerente.
+- **Para que serve**: Unir dados de perfil, histórico de pedidos e preferências vindos de 3 microsserviços diferentes em um payload único.
+- **Quando usar**: Em orquestrações de agregação (*API Composition Pattern*).
+- **Quando NÃO usar**: Quando apenas o resultado do último passo for relevante para a saída.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    MERGE USER_AGGREGATE
+  }
+  ```
+
+#### 39. `AWAIT`
+- **Definição Semântica**: Suspensão reativa de Saga: persiste o estado da execução como `SUSPENDED` no PostgreSQL e liberta a thread do motor, aguardando retoma externa.
+- **Para que serve**: Fluxos com confirmação assíncrona por webhook (ex: confirmação de Pix, callback de adquirente bancária).
+- **Quando usar**: Quando uma etapa depender de um evento externo de tempo indeterminado.
+- **Quando NÃO usar**: Para chamadas síncronas que respondem em menos de alguns segundos.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    AWAIT PAYMENT_CONFIRMATION
+  }
+  ```
+
+#### 40. `PROBE`
+- **Definição Semântica**: Inspeção de vivacidade ultrarrápida (*Zero-IO Health Check*) que consulta métricas em memória (<1ms) diretamente no `ServiceMetricsCollector`.
+- **Para que serve**: Checagem de disponibilidade antes de disparar operações de altíssimo valor financeiro.
+- **Quando usar**: Guardrails operacionais antes de fluxos pesados.
+- **Quando NÃO usar**: Para testes de caixa-preta ou monitoramento sintético profundo.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    PROBE CORE_GATEWAY
+  }
+  ```
+
+#### 41. `SHADOW`
+- **Definição Semântica**: Disparo assíncrono espelho (*Dark Launching / Canary*): duplica a requisição para um serviço experimental em homologação sem afetar o cliente.
+- **Para que serve**: Validar novas versões de microsserviços sob tráfego de produção real com zero risco de impacto ao usuário.
+- **Quando usar**: Migrações de arquitetura e testes comparativos de precisão/latência.
+- **Quando NÃO usar**: Em serviços espelho que possam gerar cobranças reais duplicadas (sem sandbox).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    SHADOW CANARY_PAYMENT
+  }
+  ```
+
+#### 42. `REDACT`
+- **Definição Semântica**: Higienização e mascaramento irreversível de dados sensíveis (senhas, cartões, tokens, CPFs) antes de gravação em logs ou telemetria.
+- **Para que serve**: Cumprimento estrito de normas de privacidade LGPD, GDPR e requisitos PCI-DSS de proteção de credenciais.
+- **Quando usar**: Antes de persistir qualquer trilha em logs ou transmitir eventos para ferramentas de terceiros.
+- **Quando NÃO usar**: Em fluxos internos seguros que ainda necessitam da credencial em texto puro para criptografar.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    REDACT PASSWORD_TOKEN
+  }
+  ```
+
+#### 43. `CHECKPOINT`
+- **Definição Semântica**: Gravação explícita de um marco intermediário do estado de execução no banco de dados para recuperação cirúrgica.
+- **Para que serve**: Salvar o estado de processamento após etapas pesadas de um pipeline para que falhas posteriores não exijam reexecução integral.
+- **Quando usar**: Pipelines de dados em múltiplos estágios e transações multipartes.
+- **Quando NÃO usar**: Em fluxos triviais de passo único.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    CHECKPOINT STAGE_1_PASSED
+  }
+  ```
+
+#### 44. `SIMULATE`
+- **Definição Semântica**: Injeção controlada de falhas sintéticas, latência artificial ou respostas simuladas (*Chaos Engineering*).
+- **Para que serve**: Testar o comportamento do motor, disjuntores de circuito e compensações de Saga em ambientes de desenvolvimento e homologação.
+- **Quando usar**: Testes de resiliência, validação de failover e benchmarks de estresse.
+- **Quando NÃO usar**: Em ambiente de produção ativo.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    SIMULATE LATENCY_200MS
+  }
+  ```
+
+#### 45. `FANOUT`
+- **Definição Semântica**: Dispersão paralela com contrapressão estrita (*Bounded Concurrency*): distribui trabalho para múltiplos nós sem esgotar o pool de conexões.
+- **Para que serve**: Notificar 500 parceiros ou consultar 30 fornecedores simultaneamente mantendo a concorrência contida em lotes de 5 ou 10 por vez.
+- **Quando usar**: Dispersões paralelas em larga escala.
+- **Quando NÃO usar**: Quando houver menos de 3 tarefas simultâneas (use `PARALLEL`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    FANOUT MULTI_NOTIFY
+  }
+  ```
+
+---
+
+### Detalhamento dos 5 Verbos Revolucionários ("Killer Features" - v2.7)
+
+#### 46. `STREAM`
+- **Definição Semântica**: Emissão progressiva em tempo real: transmite deltas e fragmentos de resposta através de Server-Sent Events (SSE) ou WebSockets sem bloquear o motor.
+- **Para que serve**: Habilitar streaming de respostas de IA generativa (estilo ChatGPT/Copilot), atualizações de cotações financeiras ao vivo e telemetria contínua.
+- **Quando usar**: Quando o cliente precisa consumir dados conforme eles são produzidos sem aguardar o processamento completo.
+- **Quando NÃO usar**: Em comandos atômicos transacionais que dependem de confirmação única binária.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    STREAM AI_RESPONSE
+  }
+  FLOW {
+    SEQUENCE {
+      STREAM AI_RESPONSE
+    }
+  }
+  OUTPUT {
+    FORMAT "event"
+  }
+  ```
+
+#### 47. `ATTEST`
+- **Definição Semântica**: Prova criptográfica inviolável de estado: gera um selo determinístico com HMAC-SHA256 atestando a integridade dos dados e o estado da transação.
+- **Para que serve**: Cumprimento estrito de conformidade SOC2, HIPAA, ISO 27001 e auditoria regulatória em operações financeiras e de saúde.
+- **Quando usar**: Ao concluir transferências de alto valor, auditorias de acesso privilegiado ou aprovações formais de crédito.
+- **Quando NÃO usar**: Em consultas efêmeras ou requisições de leitura de baixa relevância.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    ATTEST PROOF_OF_STATE
+  }
+  ```
+
+#### 48. `ADAPT`
+- **Definição Semântica**: Roteamento adaptativo inteligente baseado no algoritmo *Multi-Armed Bandit* ($\epsilon$-greedy): seleciona dinamicamente a melhor rota com base em métricas de latência e taxa de erro em tempo real.
+- **Para que serve**: Balancear tráfego entre múltiplos provedores de microsserviços (ex.: adquirentes de cartão A, B e C), desviando de falhas antes que o usuário perceba lentidão.
+- **Quando usar**: Cenários com múltiplos provedores redundantes sujeitos a degradações pontuais de rede.
+- **Quando NÃO usar**: Quando houver apenas um provedor fixo cadastrado para a capacidade.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    ADAPT PROVIDER_A PROVIDER_B
+  }
+  ```
+
+#### 49. `ESCALATE`
+- **Definição Semântica**: Supervisão *Human-in-the-Loop* (HITL): suspende a Saga perante transações suspeitas ou de alto risco, emitindo token de decisão e prazo de SLA para deliberação humana formal.
+- **Para que serve**: Prevenção de fraudes financeiras, liberação de empréstimos vultosos ou aprovação de operações sensíveis de infraestrutura.
+- **Quando usar**: Quando um score de risco ultrapassar o limiar de segurança e exigir aprovação expressa de um gerente ou operador humano.
+- **Quando NÃO usar**: Em fluxos 100% automatizados de alta velocidade que não admitem intervenção manual.
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    ESCALATE COMPLIANCE_OFFICER
+  }
+  ```
+
+#### 50. `REASON`
+- **Definição Semântica**: Deliberação racional estruturada (*Chain-of-Thought*): executa reflexão agêntica avaliando hipóteses, prós, contras e escores de confiança com fundamentação auditável da decisão.
+- **Para que serve**: Orquestração de agentes autônomos de IA que precisam tomar decisões explicáveis, tais como triagem clínica, aprovação de crédito ou diagnóstico de sistemas.
+- **Quando usar**: Processos complexos de tomada de decisão onde a justificativa formal é tão importante quanto a decisão em si.
+- **Quando NÃO usar**: Validações determinísticas simples de esquemas ou invariantes (use `VALIDATE` ou `GUARD`).
+- **Exemplo DSL**:
+  ```text
+  REQUIRE {
+    REASON FRAUD_DECISION
+  }
+  ```
+
+---
+
+### Guia Rápido: Como Escolher o Verbo Correto? (Árvore de Decisão Rápida)
 
 Quando estiver modelando um fluxo ou registrando um microsserviço no INP Protocol, faça as seguintes perguntas:
 
-1. **A ação cria um registro de negócio com ID próprio?**
-   ➔ Use `CREATE`. (Se for só gravação em cache/storage, use `STORE`).
-2. **A ação lê dados do seu próprio banco ou de uma API externa?**
-   ➔ Do próprio banco: use `READ`. De uma API externa ou fornecedor remoto: use `FETCH`.
-3. **A ação apenas verifica disponibilidade sem reter nada?**
-   ➔ Use `CHECK`. (Se precisar bloquear o item para garantir a compra, use `RESERVE`).
-4. **O fluxo falhou e você precisa desfazer a reserva de estoque?**
-   ➔ Use `RELEASE`.
-5. **O fluxo falhou e você precisa devolver o dinheiro cobrado?**
-   ➔ Use `REFUND`.
-6. **A ação altera status de negócio para cancelado ou aprovado?**
-   ➔ Use `CANCEL` ou `APPROVE`.
-7. **A ação envolve cobrança financeira atômica imediata?**
-   ➔ Use `EXECUTE PAYMENT`.
-8. **A ação precisa checar quem é a pessoa vs quais as permissões dela?**
-   ➔ Quem é: use `AUTHENTICATE`. Permissões: use `AUTHORIZE`.
-9. **A ação calcula valores com fórmulas matemáticas puras?**
-   ➔ Use `CALCULATE`.
-10. **A ação avisa pessoas sobre o resultado de forma leve?**
-    ➔ Use `NOTIFY`.
-11. **A ação emite dados para múltiplos microsserviços em mensageria?**
-    ➔ Use `PUBLISH`.
+1. **A ação cria um registro de negócio com ID próprio?** ➔ Use `CREATE`. (Se for só gravação em cache/storage, use `STORE`).
+2. **A ação lê dados do seu próprio banco ou de uma API externa?** ➔ Do próprio banco: use `READ`. De uma API externa: use `FETCH`.
+3. **A ação apenas verifica disponibilidade sem reter nada?** ➔ Use `CHECK`. (Se precisar bloquear o item com prazo, use `RESERVE`).
+4. **O fluxo falhou e você precisa desfazer a reserva de estoque?** ➔ Use `RELEASE`.
+5. **O fluxo falhou e você precisa devolver o dinheiro cobrado?** ➔ Use `REFUND`.
+6. **A ação altera status de negócio para cancelado ou aprovado?** ➔ Use `CANCEL` ou `APPROVE`.
+7. **A ação envolve cobrança financeira atômica imediata?** ➔ Use `EXECUTE PAYMENT`.
+8. **A ação precisa checar quem é a pessoa vs quais as permissões dela?** ➔ Quem é: use `AUTHENTICATE`. Permissões: use `AUTHORIZE`.
+9. **A ação calcula valores com fórmulas matemáticas puras?** ➔ Use `CALCULATE`.
+10. **A ação avisa pessoas sobre o resultado de forma leve?** ➔ Use `NOTIFY`.
+11. **A ação emite dados para múltiplos microsserviços em mensageria?** ➔ Use `PUBLISH`.
+12. **Muitos clientes pedem o mesmo dado pesado ao mesmo tempo?** ➔ Use `COALESCE` (Single-Flight).
+13. **O resultado de uma consulta muda raramente e pode ficar em memória?** ➔ Use `MEMOIZE`.
+14. **Você quer barrar parâmetros inválidos antes de gastar rede?** ➔ Use `GUARD` (Fail-Fast).
+15. **A API externa limita requisições por segundo?** ➔ Use `THROTTLE` (Token Bucket).
+16. **Você precisa processar uma lista grande de dados sem travar?** ➔ Use `BATCH` (Chunking).
+17. **O cliente não precisa esperar a conclusão desta etapa?** ➔ Use `DEFER` (Outbox).
+18. **A etapa depende de um webhook externo futuro?** ➔ Use `AWAIT`.
+19. **Você quer transmitir tokens de IA em tempo real para a UI?** ➔ Use `STREAM`.
+20. **A operação exige recibo criptográfico auditável para conformidade legal?** ➔ Use `ATTEST`.
+21. **Você tem múltiplos provedores e quer desviar de nós lentos?** ➔ Use `ADAPT`.
+22. **A transação é de alto risco e exige aprovação de um gerente humano?** ➔ Use `ESCALATE`.
+23. **Um agente de IA precisa justificar o raciocínio de sua decisão?** ➔ Use `REASON`.
 

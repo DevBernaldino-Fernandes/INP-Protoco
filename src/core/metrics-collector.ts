@@ -29,6 +29,8 @@ export interface ServiceMetric {
   failureCount: number;
   /** Classificação operacional do serviço ('HEALTHY', 'DEGRADED', 'OFFLINE') */
   status: 'HEALTHY' | 'DEGRADED' | 'OFFLINE';
+  /** Carimbo temporal em milissegundos da última atividade registada */
+  lastActivity: number;
 }
 
 /**
@@ -64,10 +66,11 @@ export class ServiceMetricsCollector {
   public recordSuccess(serviceId: string, latencyMs: number): void {
     let metric = this.metricsMap.get(serviceId);
     if (!metric) {
-      metric = { serviceId, latencies: [], successCount: 0, failureCount: 0, status: 'HEALTHY' };
+      metric = { serviceId, latencies: [], successCount: 0, failureCount: 0, status: 'HEALTHY', lastActivity: Date.now() };
       this.metricsMap.set(serviceId, metric);
     }
 
+    metric.lastActivity = Date.now();
     metric.successCount++;
     metric.latencies.push(latencyMs);
     // Limita a janela deslizante às últimas 10 chamadas para refletir o estado operacional recente
@@ -87,10 +90,11 @@ export class ServiceMetricsCollector {
   public recordFailure(serviceId: string): void {
     let metric = this.metricsMap.get(serviceId);
     if (!metric) {
-      metric = { serviceId, latencies: [], successCount: 0, failureCount: 0, status: 'HEALTHY' };
+      metric = { serviceId, latencies: [], successCount: 0, failureCount: 0, status: 'HEALTHY', lastActivity: Date.now() };
       this.metricsMap.set(serviceId, metric);
     }
 
+    metric.lastActivity = Date.now();
     metric.failureCount++;
     this.evaluateStatus(metric);
   }
@@ -107,6 +111,7 @@ export class ServiceMetricsCollector {
   public getHealthScore(serviceId: string, baseTrustScore: number): number {
     const metric = this.metricsMap.get(serviceId);
     if (!metric) return baseTrustScore / 100;
+    if (metric.status === 'OFFLINE') return 0.05;
 
     const totalCalls = metric.successCount + metric.failureCount;
     if (totalCalls === 0) return baseTrustScore / 100;
@@ -126,6 +131,48 @@ export class ServiceMetricsCollector {
 
     const finalScore = Math.max(0.1, (baseTrustScore / 100) * (1 - penalty));
     return finalScore;
+  }
+
+  /**
+   * @description Força a marcação explícita de um serviço como OFFLINE (ex.: falha de heartbeat ou desconexão).
+   *
+   * @param {string} serviceId - Identificador do serviço.
+   */
+  public markOffline(serviceId: string): void {
+    let metric = this.metricsMap.get(serviceId);
+    if (!metric) {
+      metric = { serviceId, latencies: [], successCount: 0, failureCount: 1, status: 'OFFLINE', lastActivity: Date.now() };
+      this.metricsMap.set(serviceId, metric);
+    } else {
+      metric.status = 'OFFLINE';
+      metric.lastActivity = Date.now();
+    }
+    TelemetryService.getInstance().broadcast('SERVICE_HEALTH_CHANGED', {
+      serviceId,
+      status: 'OFFLINE',
+      avgLatency: 0,
+      errorRate: 1.0
+    });
+  }
+
+  /**
+   * @description Varre periodicamente os serviços para identificar inatividade superior ao limiar e marcá-los como OFFLINE.
+   *
+   * @param {number} inactivityThresholdMs - Milissegundos de inatividade antes de considerar nó morto (default: 60000ms).
+   */
+  public checkOfflineServices(inactivityThresholdMs = 60000): void {
+    const now = Date.now();
+    for (const metric of this.metricsMap.values()) {
+      if (metric.status !== 'OFFLINE' && metric.lastActivity && (now - metric.lastActivity > inactivityThresholdMs)) {
+        metric.status = 'OFFLINE';
+        TelemetryService.getInstance().broadcast('SERVICE_HEALTH_CHANGED', {
+          serviceId: metric.serviceId,
+          status: 'OFFLINE',
+          avgLatency: 0,
+          errorRate: 1.0
+        });
+      }
+    }
   }
 
   /**

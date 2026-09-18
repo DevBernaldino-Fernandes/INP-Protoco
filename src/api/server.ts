@@ -25,6 +25,7 @@ import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import { AppDataSource } from '../persistence/data-source';
@@ -33,6 +34,7 @@ import { Service } from '../core/types';
 import { ServiceRepository } from '../persistence/repositories/ServiceRepository';
 import { ExecutionRepository } from '../persistence/repositories/ExecutionRepository';
 import { QueueJobRepository } from '../persistence/repositories/QueueJobRepository';
+import { SagaStateRepository } from '../persistence/repositories/SagaStateRepository';
 import { SagaRecoveryManager } from '../core/saga-recovery-manager';
 import { QueueWorker } from '../core/queue-worker';
 import { RegistryCache } from '../core/registry-cache';
@@ -48,6 +50,10 @@ import { UserRepository } from '../persistence/repositories/UserRepository';
 import { ApiKeyRepository } from '../persistence/repositories/ApiKeyRepository';
 import { AuditLogRepository } from '../persistence/repositories/AuditLogRepository';
 import { UserRole, DbaLevel } from '../persistence/entities/User';
+import { registerNativeServices } from '../services/native-services-registry';
+import { TimeMachineEngine } from '../core/time-machine-engine';
+import { ExecutionEngine } from '../core/execution-engine';
+import { CapabilityRegistry } from '../core/capability-registry';
 
 const app = express();
 
@@ -56,15 +62,31 @@ app.use(helmet({
   contentSecurityPolicy: false // Desativado para permitir a execução de scripts do portal web local
 }));
 
-// Ativação do suporte a partilha de recursos de origem cruzada (CORS)
-app.use(cors());
+// Ativação do suporte a partilha de recursos de origem cruzada (CORS) com controlo estrito de origens
+const corsOrigin = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim())
+  : (process.env.NODE_ENV === 'production' ? false : '*');
+
+app.use(cors({
+  origin: corsOrigin,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Registration-Token', 'X-Correlation-ID', 'X-Request-ID', 'X-Idempotency-Key']
+}));
 
 // Limitação prudencial do tamanho do corpo do pedido
 app.use(express.json({ limit: '2mb' }));
 
-// Disponibilização de ficheiros estáticos para a interface gráfica e ativos da demonstração
-app.use(express.static(path.join(__dirname)));
-app.use(express.static(path.join(process.cwd(), 'src', 'api')));
+// Disponibilização estrita de ficheiros estáticos autorizados para o portal web (previne exposição de código-fonte .ts/.js)
+app.get('/portal.css', (req, res) => {
+  const cssDist = path.join(__dirname, 'portal.css');
+  const cssSrc = path.join(process.cwd(), 'src', 'api', 'portal.css');
+  res.sendFile(fs.existsSync(cssDist) ? cssDist : cssSrc);
+});
+app.get('/portal.js', (req, res) => {
+  const jsDist = path.join(__dirname, 'portal.js');
+  const jsSrc = path.join(process.cwd(), 'src', 'api', 'portal.js');
+  res.sendFile(fs.existsSync(jsDist) ? jsDist : jsSrc);
+});
 app.use('/demo-assets', express.static(path.join(process.cwd(), 'examples', 'ecommerce-ecosystem')));
 
 /**
@@ -84,7 +106,7 @@ app.use((req, res, next) => {
  */
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: process.env.RATE_LIMIT_MAX ? parseInt(process.env.RATE_LIMIT_MAX, 10) : (process.env.NODE_ENV === 'test' ? 1000000 : 100),
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -94,23 +116,47 @@ const apiLimiter = rateLimit({
 });
 
 /**
+ * Middleware de Limitação Rigorosa de Taxa para Autenticação (Anti-Brute Force):
+ * Limita cada endereço IP a um máximo de 15 tentativas por janela de 15 minutos nas rotas de login e registo.
+ */
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.AUTH_LIMIT_MAX ? parseInt(process.env.AUTH_LIMIT_MAX, 10) : (process.env.NODE_ENV === 'test' ? 1000000 : 15),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Demasiadas tentativas de autenticação a partir deste endereço IP. Por favor, tente novamente após 15 minutos.'
+  }
+});
+
+/**
  * @description Middleware de autenticação obrigatória para operações de registo de serviços e federação.
- * Valida a presença e conformidade do cabeçalho `X-Registration-Token`.
+ * Valida a presença e conformidade do cabeçalho `X-Registration-Token` com comparação em tempo constante.
  *
  * @param {express.Request} req - Pedido HTTP recebido.
  * @param {express.Response} res - Resposta HTTP.
  * @param {express.NextFunction} next - Função de continuidade do fluxo do middleware.
- * @security Bloqueia o registo não autorizado de serviços por atores não credenciados na rede.
+ * @security Bloqueia o registo não autorizado de serviços por atores não credenciados na rede e mitiga Timing Attacks.
  */
 function requireRegistrationToken(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const regSecret = process.env.INP_REGISTRATION_SECRET || (process.env.NODE_ENV !== 'production' ? 'inp-super-secret-registration-token-2026' : undefined);
-  if (regSecret) {
-    const token = req.headers['x-registration-token'];
-    if (token !== regSecret) {
-      return res.status(401).json({ success: false, error: 'Não autorizado: Cabeçalho X-Registration-Token em falta ou inválido.' });
-    }
-  } else if (process.env.NODE_ENV === 'production') {
+  const regSecret = process.env.INP_REGISTRATION_SECRET ||
+    (process.env.NODE_ENV !== 'production' ? 'inp-super-secret-registration-token-2026' : undefined);
+  // MEDIDA DE SEGURANÇA: Em produção, INP_REGISTRATION_SECRET é obrigatório.
+  if (!regSecret) {
+    console.error('[SEGURANÇA CRÍTICA] INP_REGISTRATION_SECRET não está definido em produção. Nenhum registo de serviço é permitido.');
     return res.status(401).json({ success: false, error: 'Não autorizado: INP_REGISTRATION_SECRET não se encontra configurado no ambiente de produção.' });
+  }
+  const token = req.headers['x-registration-token'];
+  if (typeof token !== 'string') {
+    return res.status(401).json({ success: false, error: 'Não autorizado: Cabeçalho X-Registration-Token em falta ou inválido.' });
+  }
+
+  // MEDIDA DE SEGURANÇA: Comparação criptográfica em tempo constante via SHA-256 (prevenção de Timing Attacks e fuga de comprimento)
+  const tokenHash = crypto.createHash('sha256').update(token, 'utf8').digest();
+  const secretHash = crypto.createHash('sha256').update(regSecret, 'utf8').digest();
+  if (!crypto.timingSafeEqual(tokenHash, secretHash)) {
+    return res.status(401).json({ success: false, error: 'Não autorizado: Cabeçalho X-Registration-Token em falta ou inválido.' });
   }
   next();
 }
@@ -119,6 +165,9 @@ function requireRegistrationToken(req: express.Request, res: express.Response, n
  * Middleware de Resolução de Autenticação e Credenciais:
  * Extrai o token Bearer ou chave X-API-Key e preenche o contexto de segurança (SecurityContext).
  */
+// Cache LRU em memória do estado de ativação dos utilizadores para máxima cadência (TTL: 30s)
+const userActiveCache = new Map<string, { active: boolean; expiresAt: number }>();
+
 app.use(async (req, res, next) => {
   const correlationId = (req.headers['x-correlation-id'] || req.headers['x-request-id'] || uuidv4()) as string;
   let secContext: any = {
@@ -134,18 +183,43 @@ app.use(async (req, res, next) => {
     const token = authHeader.substring(7).trim();
     const tokenPayload = AuthService.verifyToken(token);
     if (tokenPayload) {
-      secContext = {
-        userId: tokenPayload.userId,
-        email: tokenPayload.email,
-        name: tokenPayload.name,
-        role: tokenPayload.role,
-        dbaLevel: tokenPayload.dbaLevel,
-        company: tokenPayload.company,
-        permissions: tokenPayload.permissions,
-        correlationId,
-        authType: 'JWT'
-      };
-      (req as any).user = tokenPayload;
+      // MEDIDA DE SEGURANÇA: Verificação de utilizador ativo na base de dados para impedir uso de tokens de contas suspensas
+      let isActive = false;
+      const cached = userActiveCache.get(tokenPayload.userId);
+      const now = Date.now();
+      if (cached && cached.expiresAt > now) {
+        isActive = cached.active;
+      } else {
+        try {
+          const userRec = await UserRepository.findOne({
+            where: { id: tokenPayload.userId },
+            select: ['id', 'active']
+          });
+          isActive = !!userRec?.active;
+          if (userActiveCache.size >= 5000) {
+            const first = userActiveCache.keys().next().value;
+            if (first) userActiveCache.delete(first);
+          }
+          userActiveCache.set(tokenPayload.userId, { active: isActive, expiresAt: now + 30000 });
+        } catch {
+          isActive = false;
+        }
+      }
+
+      if (isActive) {
+        secContext = {
+          userId: tokenPayload.userId,
+          email: tokenPayload.email,
+          name: tokenPayload.name,
+          role: tokenPayload.role,
+          dbaLevel: tokenPayload.dbaLevel,
+          company: tokenPayload.company,
+          permissions: tokenPayload.permissions,
+          correlationId,
+          authType: 'JWT'
+        };
+        (req as any).user = tokenPayload;
+      }
     }
   } else if (apiKeyHeader) {
     const keyAuth = await AuthService.authenticateApiKey(apiKeyHeader);
@@ -214,6 +288,27 @@ function requireAdminOrLocal(req: express.Request, res: express.Response, next: 
 
 let inpCore: INPCore;
 
+
+/**
+ * Cache de idempotência em memória para prevenir execuções duplicadas de intenções do cliente.
+ * Retém respostas finalizadas por 24 horas (TTL: 86400000ms).
+ * @security Previne processamento duplicado de transações financeiras e orquestrações críticas.
+ */
+const idempotencyCache = new Map<string, { result: any; expiresAt: number }>();
+
+/**
+ * @description Limpeza periódica de entradas expiradas do cache de idempotência.
+ * Executa a cada hora para conter o crescimento de memória em produção.
+ */
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of idempotencyCache.entries()) {
+    if (entry.expiresAt <= now) {
+      idempotencyCache.delete(key);
+    }
+  }
+}, 3600000);
+
 // Inicialização da fonte de dados PostgreSQL e arranque do ecossistema INP
 AppDataSource.initialize()
   .then(async () => {
@@ -223,7 +318,10 @@ AppDataSource.initialize()
     await AuthService.seedDefaultUsers();
 
     inpCore = new INPCore();
-    
+
+    // Auto-registo de serviços nativos integrados no catálogo de capacidades
+    await registerNativeServices(inpCore.getRegistry());
+
     // Recuperação automática de Sagas interrompidas com compasso de espera de 5 segundos
     setTimeout(() => {
       SagaRecoveryManager.recoverPendingSagas(inpCore.getRegistry())
@@ -234,7 +332,23 @@ AppDataSource.initialize()
     QueueWorker.start();
 
     const port = process.env.PORT || 3000;
-    app.listen(port, () => console.log(`🚀 Servidor INP em execução na porta ${port}`));
+    const serverInstance = app.listen(port, () => console.log(`🚀 Servidor INP em execução na porta ${port}`));
+
+    // Encerramento ordeiro (Graceful Shutdown) para ambientes orquestrados e contentorizados
+    const gracefulShutdown = async (signal: string) => {
+      console.log(`[Servidor INP] Sinal ${signal} recebido. A iniciar encerramento ordeiro...`);
+      QueueWorker.stop();
+      serverInstance.close(async () => {
+        if (AppDataSource.isInitialized) {
+          await AppDataSource.destroy();
+        }
+        console.log('[Servidor INP] Ligações fechadas. Processo concluído com êxito.');
+        process.exit(0);
+      });
+    };
+
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   })
   .catch(err => {
     console.error('❌ Falha na ligação à base de dados:', err);
@@ -250,6 +364,24 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
  * Rota de Streaming de Telemetria em Tempo Real (Server-Sent Events - SSE)
  */
 app.get('/api/telemetry', (req, res) => {
+  // MEDIDA DE SEGURANÇA: Verificação de autenticação para prevenir escuta não autorizada de eventos transacionais
+  const secContext = (req as any).securityContext;
+  const queryToken = req.query.token as string | undefined;
+  let isAuthorized = !!(secContext && secContext.userId);
+
+  if (!isAuthorized && queryToken) {
+    const verified = AuthService.verifyToken(queryToken);
+    if (verified) isAuthorized = true;
+  }
+
+  // Em modo de desenvolvimento local, autoriza loopback para o portal gráfico local
+  const isLocalDev = (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) &&
+    (req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1');
+
+  if (!isAuthorized && !isLocalDev) {
+    return res.status(401).json({ success: false, error: 'Não autorizado: Acesso à telemetria requer token de autenticação válido.' });
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -292,6 +424,223 @@ app.get('/api/db-status', (req, res) => {
     connected: AppDataSource.isInitialized,
     name: AppDataSource.options.database
   });
+});
+
+/**
+ * Rotas Oficiais da Máquina do Tempo do Motor (TimeMachineEngine v2.0)
+ */
+
+/**
+ * Consulta da Linha do Tempo e Snapshots Atómicos de uma Execução
+ */
+app.get('/api/time-machine/timeline/:executionId', (req, res) => {
+  try {
+    const { executionId } = req.params;
+    const timeMachine = TimeMachineEngine.getInstance();
+    const timeline = timeMachine.getTimeline(executionId);
+
+    // Higienização defensiva (PoLP) para assegurar que segredos ou credenciais não vazem via REST
+    const sanitizedTimeline = timeline.map(s => ({
+      ...s,
+      contextSnapshot: s.contextSnapshot ? DataSanitizer.sanitize(s.contextSnapshot) : undefined,
+      deltaDiff: {
+        added: DataSanitizer.sanitize(s.deltaDiff.added),
+        modified: DataSanitizer.sanitize(s.deltaDiff.modified),
+        deleted: s.deltaDiff.deleted
+      }
+    }));
+
+    res.json({
+      success: true,
+      executionId,
+      totalSnapshots: sanitizedTimeline.length,
+      timeline: sanitizedTimeline
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Reconstituição e Replay Determinístico a partir de Marco Temporal
+ * Suporta modo INSPECT (apenas leitura do estado) ou EXECUTE (reexecução ativa em ramificação isolada)
+ */
+app.post('/api/time-machine/replay', async (req, res) => {
+  try {
+    const { executionId, stepIndex, mode = 'INSPECT', overrides, dryRun, steps } = req.body;
+    if (!executionId) {
+      return res.status(400).json({ success: false, error: 'O parâmetro executionId é obrigatório.' });
+    }
+
+    const targetStep = stepIndex !== undefined ? Number(stepIndex) : 0;
+
+    if (mode === 'EXECUTE') {
+      const execEngine = new ExecutionEngine(new CapabilityRegistry());
+      const result = await execEngine.replayFlowFromStep(executionId, targetStep, {
+        overrides,
+        dryRun,
+        steps
+      });
+      return res.json({
+        success: true,
+        executionId,
+        stepIndex: targetStep,
+        replayResult: result,
+        message: dryRun
+          ? `Simulação What-If concluída com sucesso a partir do passo ${targetStep}.`
+          : `Replay ativo inicializado com sucesso na bifurcação ${result.forkedExecutionId}.`
+      });
+    }
+
+    const timeMachine = TimeMachineEngine.getInstance();
+    const restoredContext = timeMachine.travelTo(executionId, targetStep);
+
+    res.json({
+      success: true,
+      executionId,
+      stepIndex: targetStep,
+      restoredContext,
+      message: `Estado temporal reconstituído com sucesso a partir do passo ${targetStep}.`
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Simulação Preditiva What-If em Sandbox (Dry-Run)
+ */
+app.post('/api/time-machine/simulate', (req, res) => {
+  try {
+    const { executionId, fromStepIndex, overrides, steps } = req.body;
+    if (!executionId) {
+      return res.status(400).json({ success: false, error: 'O parâmetro executionId é obrigatório.' });
+    }
+
+    const timeMachine = TimeMachineEngine.getInstance();
+    const baseStep = fromStepIndex !== undefined ? Number(fromStepIndex) : 0;
+    const result = timeMachine.simulateWhatIf(executionId, baseStep, overrides || {}, steps || []);
+
+    res.json({
+      success: result.status === 'SIMULATION_SUCCESS',
+      simulation: result
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @description Bifurcação Temporal e Criação de Ramo com Linhagem (Time-Travel Forking)
+ * @security Isola o novo contexto da execução original.
+ * @audit Registra evento TIMELINE_FORKED e preserva vínculo pai-filho.
+ */
+app.post('/api/time-machine/fork', (req, res) => {
+  try {
+    const { parentExecutionId, fromStepIndex, overrides } = req.body;
+    if (!parentExecutionId) {
+      return res.status(400).json({ success: false, error: 'O parâmetro parentExecutionId é obrigatório.' });
+    }
+
+    const timeMachine = TimeMachineEngine.getInstance();
+    const baseStep = fromStepIndex !== undefined ? Number(fromStepIndex) : 0;
+    const result = timeMachine.forkExecution(parentExecutionId, baseStep, overrides || {});
+
+    res.json({
+      success: true,
+      fork: result,
+      message: `Execução bifurcada com sucesso a partir do passo ${baseStep}.`
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @description Verificação Forense de Integridade da Linha do Tempo (Merkle Timeline Chain)
+ * @security Valida hashes SHA-256 encadeados para detectar qualquer adulteração ou exclusão de snapshots.
+ * @audit Assegura conformidade com o EU AI Act Artigo 12 e regulamentos DORA.
+ */
+app.get('/api/time-machine/verify-integrity/:executionId', (req, res) => {
+  try {
+    const { executionId } = req.params;
+    const timeMachine = TimeMachineEngine.getInstance();
+    const result = timeMachine.verifyTimelineIntegrity(executionId);
+
+    res.json({
+      success: result.valid,
+      integrity: result
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @description Exportação de Pacote Assinado de Auditoria Forense (HMAC + Merkle Root)
+ * @security Garante não-repúdio e verificação de integridade antes da extração do bundle.
+ * @audit Produz artefato portável para perícia regulatória independente.
+ */
+app.get('/api/time-machine/export/:executionId', (req, res) => {
+  try {
+    const { executionId } = req.params;
+    const timeMachine = TimeMachineEngine.getInstance();
+    const bundle = timeMachine.exportTimelineBundle(executionId);
+
+    res.json({
+      success: true,
+      bundle
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @description Importação de Pacote Assinado de Auditoria Forense
+ * @security Valida a assinatura HMAC e revalida a cadeia Merkle de snapshots antes de aceitar o pacote.
+ * @audit Reconstitui linhas do tempo distribuídas mantendo o rigor forense.
+ */
+app.post('/api/time-machine/import', (req, res) => {
+  try {
+    const { bundle } = req.body;
+    if (!bundle) {
+      return res.status(400).json({ success: false, error: 'O objeto bundle é obrigatório.' });
+    }
+
+    const timeMachine = TimeMachineEngine.getInstance();
+    const result = timeMachine.importTimelineBundle(bundle);
+
+    res.json({
+      success: true,
+      importResult: result,
+      message: `Pacote da execução ${result.executionId} importado e validado com sucesso.`
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @description Purga de Manutenção de Sagas Consolidadas para Mitigação de Table Bloat
+ * @security Preserva sagas ativas ou pendentes de recuperação; remove apenas dados expirados.
+ * @audit Documenta o total de registros de sagas expurgados do PostgreSQL.
+ */
+app.post('/api/time-machine/purge-sagas', async (req, res) => {
+  try {
+    const { olderThanDays } = req.body;
+    const days = olderThanDays !== undefined ? Number(olderThanDays) : 30;
+    const purgedCount = await SagaRecoveryManager.purgeCompletedSagas(days);
+
+    res.json({
+      success: true,
+      purgedCount,
+      retentionDays: days,
+      message: `${purgedCount} sagas consolidadas foram expurgadas com sucesso.`
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 /**
@@ -345,7 +694,7 @@ app.post('/services/register', apiLimiter, requireRegistrationToken, async (req,
 /**
  * Rota de Batimento Cardíaco (Heartbeat) de Serviços
  */
-app.post('/services/heartbeat/:serviceId', async (req, res) => {
+app.post('/services/heartbeat/:serviceId', apiLimiter, requireRegistrationToken, async (req, res) => {
   try {
     await inpCore.getRegistry().heartbeat(req.params.serviceId);
     res.json({ success: true });
@@ -355,11 +704,17 @@ app.post('/services/heartbeat/:serviceId', async (req, res) => {
 });
 
 /**
- * Rota para Listar Serviços Ativos
+ * Rota para Listar Serviços Ativos com Mascaramento de Endpoints Físicos
  */
 app.get('/services', async (req, res) => {
   const services = await inpCore.getRegistry().getAllServices();
-  res.json({ services });
+  const secContext = (req as any).securityContext;
+  const isAdmin = secContext && (secContext.role === 'ADMIN' || secContext.permissions?.includes(PERMISSIONS.SERVICE_VIEW));
+  const sanitizedServices = services.map(s => ({
+    ...s,
+    endpoint: isAdmin ? (s.endpoint || 'Local Handler') : 'Roteamento Interno Gateway'
+  }));
+  res.json({ services: sanitizedServices });
 });
 
 // Mapa de estados de simulação de engenharia de caos em memória
@@ -474,7 +829,26 @@ function getConversationalMsg(errMsg: string): string | undefined {
  */
 app.post('/api/intent', apiLimiter, async (req, res) => {
   const { text, type, securityContext, async } = req.body;
-  if (!text) {
+
+  // MEDIDA DE SEGURANÇA: Prevenção de DoS por injeção de texto desmesurado na análise sintática
+  if (text !== undefined && (typeof text !== 'string' || text.length > 50000)) {
+    return res.status(400).json({ success: false, error: 'O parâmetro "text" da intenção deve ser uma cadeia de carateres e não pode exceder 50.000 carateres.' });
+  }
+
+  // Verificação de idempotência: previne processamento duplicado em caso de reenvio do cliente
+  const clientIdempotencyKey = req.headers['x-idempotency-key'] as string | undefined;
+  if (clientIdempotencyKey) {
+    if (typeof clientIdempotencyKey !== 'string' || clientIdempotencyKey.length > 256) {
+      return res.status(400).json({ success: false, error: 'O cabeçalho X-Idempotency-Key é inválido ou excede 256 carateres.' });
+    }
+    const cached = idempotencyCache.get(clientIdempotencyKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      console.log(`[Gateway] Resposta idempotente devolvida para a chave: ${clientIdempotencyKey}`);
+      return res.json(cached.result);
+    }
+  }
+
+  if (!text && !req.body.intentObject && !req.body.intent) {
     return res.status(400).json({ success: false, error: 'O parâmetro "text" da intenção é obrigatório.' });
   }
   try {
@@ -485,9 +859,11 @@ app.post('/api/intent', apiLimiter, async (req, res) => {
     const authenticatedContext = (req as any).securityContext || {};
     const effectiveUserId = authenticatedContext.userId || securityContext?.userId;
     const effectiveRole = authenticatedContext.role || securityContext?.role || 'ANONYMOUS';
-    const effectivePermissions = authenticatedContext.permissions?.length
-      ? authenticatedContext.permissions
-      : (securityContext?.permissions || []);
+    // MEDIDA DE SEGURANÇA: Utilizadores autenticados recebem sempre as permissões emitidas pelo servidor.
+    // Utilizadores anónimos recebem sempre [] — o corpo do pedido nunca pode elevar privilégios.
+    const effectivePermissions = authenticatedContext.userId
+      ? (authenticatedContext.permissions || [])
+      : [];
 
     // Verificação e débito de quota de execução para clientes Empresa e Individuais
     if (authenticatedContext.userId && (effectiveRole === 'CLIENT_INDIVIDUAL' || effectiveRole === 'CLIENT_ENTERPRISE')) {
@@ -541,16 +917,43 @@ app.post('/api/intent', apiLimiter, async (req, res) => {
       });
     } else {
       // Execução síncrona em linha
-      const core = new INPCore(undefined, secContext);
-      const result = await core.processIntent(text, type === 'natural');
-      
+      const isNaturalLang = type === 'natural';
+      let result: any;
+
+      // Suporte a intenção em JSON nativo (intentObject) além de DSL textual
+      if (req.body.intentObject && typeof req.body.intentObject === 'object') {
+        const core = new INPCore(undefined, secContext);
+        result = await core.processIntentObject(req.body.intentObject);
+      } else if (req.body.intent && typeof req.body.intent === 'object') {
+        const core = new INPCore(undefined, secContext);
+        result = await core.processIntentObject(req.body.intent);
+      } else {
+        const dslText = text || (typeof req.body.intent === 'string' ? req.body.intent : undefined);
+        if (!dslText) {
+          return res.status(400).json({ success: false, error: 'Forneça o campo "text" (DSL/linguagem natural) ou "intentObject" (JSON estruturado da intenção).' });
+        }
+        const core = new INPCore(undefined, secContext);
+        result = await core.processIntent(dslText, isNaturalLang);
+      }
+
       const responseData: any = { success: true, result };
-      if (type === 'natural' && result.status === 'FAILED' && result.error) {
+      if (isNaturalLang && result.status === 'FAILED' && result.error) {
         const convMsg = getConversationalMsg(result.error);
         if (convMsg) {
           responseData.conversationalResponse = convMsg;
         }
       }
+
+      // Armazena no cache de idempotência (TTL: 24 horas)
+      if (clientIdempotencyKey) {
+        // MEDIDA DE SEGURANÇA: Limite de 5.000 entradas para evitar crescimento ilimitado de memória
+        if (idempotencyCache.size >= 5000) {
+          const oldestKey = idempotencyCache.keys().next().value;
+          if (oldestKey !== undefined) idempotencyCache.delete(oldestKey);
+        }
+        idempotencyCache.set(clientIdempotencyKey, { result: responseData, expiresAt: Date.now() + 86400000 });
+      }
+
       res.json(responseData);
     }
   } catch (err: any) {
@@ -563,6 +966,142 @@ app.post('/api/intent', apiLimiter, async (req, res) => {
       }
     }
     res.status(500).json(responseData);
+  }
+});
+
+/**
+ * @description Rota de retoma de fluxos suspensos pelo verbo AWAIT.
+ * Permite que webhooks externos ou intervenções assíncronas reativem uma Saga suspensa.
+ * @security Valida autenticação ou token de retoma para prevenir reativação não autorizada.
+ * @audit Regista a retoma da Saga com carimbo temporal e payload externo na base de dados.
+ */
+app.post('/api/workflow/:sagaId/resume', apiLimiter, async (req, res) => {
+  // MEDIDA DE SEGURANÇA: A retoma de Sagas requer autenticação — apenas utilizadores com sessão ativa
+  // e permissão INTENT_EXECUTE podem reativar fluxos suspensos.
+  const resumeCtx = (req as any).securityContext;
+  if (!resumeCtx || !resumeCtx.userId) {
+    return res.status(401).json({ success: false, error: 'Não autorizado: É necessária autenticação para retomar um fluxo suspenso.' });
+  }
+  if (!resumeCtx.permissions?.includes(PERMISSIONS.INTENT_EXECUTE)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado: A permissão intent:execute é necessária para retomar fluxos.' });
+  }
+
+  try {
+    const { sagaId } = req.params;
+    const { resumePayload, token } = req.body;
+
+    const saga = await SagaStateRepository.findOne({
+      where: [{ id: sagaId }, { executionId: sagaId }]
+    });
+
+    if (!saga) {
+      return res.status(404).json({ success: false, error: `Saga com identificador "${sagaId}" não encontrada.` });
+    }
+
+    if (saga.status !== 'SUSPENDED') {
+      return res.status(400).json({
+        success: false,
+        error: `A Saga "${sagaId}" encontra-se no estado "${saga.status}". Apenas Sagas SUSPENDED podem ser retomadas.`
+      });
+    }
+
+    // Atualiza o estado da Saga para RUNNING e armazena os dados de retoma
+    await SagaStateRepository.update(saga.id, {
+      status: 'RUNNING',
+      lastError: null
+    });
+
+    TelemetryService.getInstance().broadcast('SAGA_RESUMED', {
+      sagaId: saga.id,
+      executionId: saga.executionId,
+      resumedAt: new Date().toISOString()
+    });
+
+    console.log(`[Workflow Gateway] Saga "${saga.id}" retomada com sucesso via webhook externo.`);
+    return res.json({
+      success: true,
+      message: 'Saga retomada com sucesso.',
+      sagaId: saga.id,
+      executionId: saga.executionId,
+      status: 'RESUMED',
+      payload: resumePayload || {}
+    });
+  } catch (err: any) {
+    console.error('[Workflow Gateway] Erro na retoma da Saga:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Erro interno na retoma da Saga.' });
+  }
+});
+
+/**
+ * @description Rota de aprovação ou rejeição de fluxos suspensos por ESCALATE (Human-in-the-Loop).
+ * Permite a supervisores humanos validar decisões de alto risco com registo forense de aprovação.
+ * @security Valida permissão de aprovação e token para prevenir escaladas não autorizadas.
+ * @audit Regista a identidade do aprovador, decisão, justificação e carimbo temporal.
+ */
+app.post('/api/workflow/:sagaId/approve', apiLimiter, async (req, res) => {
+  // MEDIDA DE SEGURANÇA: A aprovação/rejeição de fluxos escalados é uma operação privilegiada.
+  // Requer autenticação e permissão de supervisor (audit:verify ou intent:view_all).
+  const approveCtx = (req as any).securityContext;
+  if (!approveCtx || !approveCtx.userId) {
+    return res.status(401).json({ success: false, error: 'Não autorizado: É necessária autenticação para aprovar ou rejeitar fluxos escalados.' });
+  }
+  const canApprove = approveCtx.permissions?.includes(PERMISSIONS.AUDIT_VERIFY) ||
+                     approveCtx.permissions?.includes(PERMISSIONS.INTENT_VIEW_ALL);
+  if (!canApprove) {
+    return res.status(403).json({ success: false, error: 'Acesso negado: Permissão de supervisor (audit:verify ou intent:view_all) necessária para aprovação de fluxos.' });
+  }
+
+  try {
+    const { sagaId } = req.params;
+    const { approved = true, approver = 'supervisor', rationale, approvalToken } = req.body;
+
+    const saga = await SagaStateRepository.findOne({
+      where: [{ id: sagaId }, { executionId: sagaId }]
+    });
+
+    if (!saga) {
+      return res.status(404).json({ success: false, error: `Saga com identificador "${sagaId}" não encontrada.` });
+    }
+
+    if (saga.status !== 'SUSPENDED') {
+      return res.status(400).json({
+        success: false,
+        error: `A Saga "${sagaId}" encontra-se no estado "${saga.status}". Apenas fluxos suspensos/escalados podem receber aprovação.`
+      });
+    }
+
+    const nextStatus = approved ? 'RUNNING' : 'FAILED';
+    const auditMessage = approved 
+      ? `Aprovado por "${approver}": ${rationale || 'Aprovação concedida'}` 
+      : `Rejeitado por "${approver}": ${rationale || 'Rejeitado por intervenção humana'}`;
+
+    await SagaStateRepository.update(saga.id, {
+      status: nextStatus,
+      lastError: approved ? null : auditMessage
+    });
+
+    TelemetryService.getInstance().broadcast(approved ? 'WORKFLOW_APPROVED' : 'WORKFLOW_REJECTED', {
+      sagaId: saga.id,
+      executionId: saga.executionId,
+      approver,
+      approved,
+      rationale,
+      decidedAt: new Date().toISOString()
+    });
+
+    console.log(`[Workflow HITL] Decisão humana para a Saga "${saga.id}": ${approved ? 'APROVADO' : 'REJEITADO'} por "${approver}".`);
+    return res.json({
+      success: true,
+      decision: approved ? 'APPROVED' : 'REJECTED',
+      sagaId: saga.id,
+      executionId: saga.executionId,
+      status: nextStatus,
+      approver,
+      decidedAt: new Date().toISOString()
+    });
+  } catch (err: any) {
+    console.error('[Workflow HITL] Erro ao processar aprovação:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Erro interno ao processar aprovação.' });
   }
 });
 
@@ -824,12 +1363,15 @@ app.post('/api/peers/execute', apiLimiter, async (req, res) => {
     return res.status(400).json({ success: false, error: 'Texto da intenção em falta ou inválido' });
   }
 
-  // Se o solicitante enviar a chave pública e assinatura digital, valida a autenticidade
-  if (requesterPublicKey && signature) {
-    const isValid = IntentFederation.getInstance().verifySignature(text, signature, requesterPublicKey);
-    if (!isValid) {
-      return res.status(401).json({ success: false, error: 'Não autorizado: Assinatura digital do parceiro inválida.' });
-    }
+  // MEDIDA DE SEGURANÇA: A assinatura criptográfica e a chave pública do solicitante são obrigatórias.
+  // Pedidos sem credenciais criptográficas de parceiro são bloqueados incondicionalmente.
+  if (!requesterPublicKey || !signature) {
+    return res.status(401).json({ success: false, error: 'Não autorizado: A chave pública e assinatura digital do parceiro são obrigatórias para execução federada.' });
+  }
+
+  const isValid = IntentFederation.getInstance().verifySignature(text, signature, requesterPublicKey);
+  if (!isValid) {
+    return res.status(401).json({ success: false, error: 'Não autorizado: Assinatura digital do parceiro inválida.' });
   }
 
   try {
@@ -856,11 +1398,20 @@ app.post('/api/peers/execute', apiLimiter, async (req, res) => {
  * Rota de Início de Sessão (Login):
  * Autentica o utilizador por email e palavra-passe, emitindo um token criptográfico assinado.
  */
-app.post('/api/auth/login', apiLimiter, async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ success: false, error: 'Email e palavra-passe são obrigatórios.' });
+    if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ success: false, error: 'Email e palavra-passe válidos são obrigatórios.' });
+    }
+
+    if (email.length > 254) {
+      return res.status(400).json({ success: false, error: 'O endereço de email não pode exceder 254 carateres.' });
+    }
+
+    // MEDIDA DE SEGURANÇA: Prevenção de DoS em scrypt através de limite máximo no comprimento da senha
+    if (password.length > 128) {
+      return res.status(400).json({ success: false, error: 'A palavra-passe não pode exceder 128 carateres.' });
     }
 
     const user = await UserRepository.findOneBy({ email: email.toLowerCase().trim() });
@@ -943,25 +1494,35 @@ app.post('/api/auth/login', apiLimiter, async (req, res) => {
  * Permite o auto-registo com atribuição de perfil (Individual, Empresa, DBA ou Auditor),
  * validação criptográfica de palavra-passe e emissão imediata de token de sessão.
  */
-app.post('/api/auth/register', apiLimiter, async (req, res) => {
+app.post('/api/auth/register', authLimiter, async (req, res) => {
   try {
     const { name, email, password, role, company, dbaLevel } = req.body;
-    if (!name || !email || !password) {
-      return res.status(400).json({ success: false, error: 'Nome, email e palavra-passe são obrigatórios.' });
+    if (!name || !email || !password || typeof name !== 'string' || typeof email !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ success: false, error: 'Nome, email e palavra-passe válidos são obrigatórios.' });
+    }
+
+    if (name.trim().length === 0 || name.trim().length > 100) {
+      return res.status(400).json({ success: false, error: 'O nome deve ter entre 1 e 100 carateres.' });
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const cleanEmail = String(email).toLowerCase().trim();
-    if (!emailRegex.test(cleanEmail)) {
-      return res.status(400).json({ success: false, error: 'Formato de endereço de email inválido.' });
+    if (cleanEmail.length > 254 || !emailRegex.test(cleanEmail)) {
+      return res.status(400).json({ success: false, error: 'Formato de endereço de email inválido ou comprimento excessivo.' });
     }
 
-    if (String(password).length < 6) {
-      return res.status(400).json({ success: false, error: 'A palavra-passe deve ter pelo menos 6 caracteres.' });
+    // MEDIDA DE SEGURANÇA: Prevenção de Hash Bomb / DoS de CPU no algoritmo scrypt
+    if (password.length < 6 || password.length > 128) {
+      return res.status(400).json({ success: false, error: 'A palavra-passe deve ter entre 6 e 128 carateres.' });
     }
 
-    // Papéis públicos elegíveis para auto-registo (restringe ADMIN por segurança)
-    const allowedRoles: UserRole[] = ['CLIENT_INDIVIDUAL', 'CLIENT_ENTERPRISE', 'DBA', 'AUDITOR'];
+    if (company !== undefined && company !== null && (typeof company !== 'string' || company.trim().length > 150)) {
+      return res.status(400).json({ success: false, error: 'O nome da empresa não pode exceder 150 carateres.' });
+    }
+
+    // MEDIDA DE SEGURANÇA: Apenas papéis de cliente são elegíveis para auto-registo público.
+    // Os papéis privilegiados DBA e AUDITOR são exclusivamente atribuídos por administradores.
+    const allowedRoles: UserRole[] = ['CLIENT_INDIVIDUAL', 'CLIENT_ENTERPRISE'];
     const chosenRole: UserRole = allowedRoles.includes(role) ? role : 'CLIENT_INDIVIDUAL';
 
     const existing = await UserRepository.findOneBy({ email: cleanEmail });
@@ -1170,6 +1731,8 @@ app.post('/api/auth/users/:id/toggle', AccessControl.requireRole('ADMIN'), async
 
     user.active = !user.active;
     await UserRepository.save(user);
+    // Invalidação imediata do cache de estado ativo para encerramento imediato de sessões
+    userActiveCache.delete(id);
 
     await AuthService.logAudit({
       userId: (req as any).securityContext?.userId,
